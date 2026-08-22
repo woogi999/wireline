@@ -588,7 +588,9 @@
           <button class="btn" id="camBtn" title="Toggle camera"><svg data-lucide="video-off" class="icon" id="camIcon"></svg><span class="label-text">Camera</span></button>
           <button class="btn" id="screenBtn" title="Share your screen"><svg data-lucide="monitor-up" class="icon" id="screenIcon"></svg><span class="label-text">Share screen</span></button>
           <button class="btn" id="fileBtn" title="Send a file"><svg data-lucide="paperclip" class="icon"></svg><span class="label-text">Send file</span></button>
-          <input type="file" id="fileInput" class="hidden" multiple webkitdirectory directory>
+          <button class="btn" id="folderBtn" title="Send a folder"><svg data-lucide="folder-up" class="icon"></svg><span class="label-text">Send folder</span></button>
+          <input type="file" id="fileInput" class="hidden" multiple>
+          <input type="file" id="folderInput" class="hidden" webkitdirectory directory>
         </div>
         <div class="status" id="callStatus"></div>
       </aside>
@@ -718,6 +720,8 @@
   const screenBtn = document.getElementById("screenBtn");
   const fileBtn = document.getElementById("fileBtn");
   const fileInput = document.getElementById("fileInput");
+  const folderBtn = document.getElementById("folderBtn");
+  const folderInput = document.getElementById("folderInput");
   const callStatus = document.getElementById("callStatus");
   const chatLog = document.getElementById("chatLog");
   const chatInput = document.getElementById("chatInput");
@@ -1071,11 +1075,55 @@
 
   fileBtn.addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", (e) => {
-    if(e.target.files.length){
-      handleFiles(Array.from(e.target.files));
-    }
-    fileInput.value = "";
+    if(e.target.files.length) handleFiles(Array.from(e.target.files));
+    e.target.value = "";
   });
+
+  folderBtn.addEventListener("click", async () => {
+    if(window.showDirectoryPicker){
+      try{
+        const handle = await window.showDirectoryPicker();
+        const files = [];
+        await collectDirectoryFiles(handle, handle.name, files);
+        if(files.length) handleFolderFiles(files, handle.name);
+        return;
+      }catch(e){
+        if(e && e.name === "AbortError") return;
+      }
+    }
+    folderInput.click();
+  });
+
+  folderInput.addEventListener("change", (e) => {
+    const files = Array.from(e.target.files || []);
+    if(files.length) handleFolderFiles(files, getFolderRoot(files));
+    e.target.value = "";
+  });
+
+  async function collectDirectoryFiles(dirHandle, relativeRoot, out){
+    for await(const entry of dirHandle.values()){
+      const rel = `${relativeRoot}/${entry.name}`;
+      if(entry.kind === "file"){
+        const file = await entry.getFile();
+        try{ Object.defineProperty(file, "webkitRelativePath", {value: rel}); }catch(e){}
+        out.push(file);
+      }else if(entry.kind === "directory"){
+        await collectDirectoryFiles(entry, rel, out);
+      }
+    }
+  }
+
+  function getFolderRoot(files){
+    const p = files.find(f => f.webkitRelativePath)?.webkitRelativePath || "";
+    return p.split("/")[0] || "folder";
+  }
+
+  function handleFolderFiles(files, rootName){
+    zipFiles(files, true, rootName).then(sendFileToAll).catch(err => {
+      console.error("Folder preparation failed:", err);
+      setStatus(callStatus, "Couldn't prepare that folder.", "err");
+    });
+  }
 
   // ---------- drag & drop ----------
   const chatArea = document.getElementById("chatArea");
@@ -1119,75 +1167,57 @@
   // webkitRelativePath; keep that path so the generated ZIP preserves the folder.
   function handleFiles(files){
     if(!files || !files.length) return;
-
     const list = Array.from(files).filter(f => f && typeof f.size === "number");
     if(!list.length) return;
 
-    const hasFolderPaths = list.some(f => f.webkitRelativePath);
-
-    // A selected folder is represented by its contained files. Zip the entire
-    // selection, including zero-byte files, rather than treating it as a 0 B file.
-    if(hasFolderPaths){
-      zipFiles(list, true).then(zipFile => sendFileToAll(zipFile)).catch(err => {
-        console.error("Folder zip failed:", err);
-        setStatus(callStatus, "Couldn't prepare that folder.", "err");
-      });
-      return;
-    }
-
-    if(list.length === 1){
-      sendFileToAll(list[0]);
-      return;
-    }
-
     const mediaFiles = list.filter(f => isImage(f.type, f.name) || isVideo(f.type, f.name));
     const otherFiles = list.filter(f => !(isImage(f.type, f.name) || isVideo(f.type, f.name)));
-
     mediaFiles.forEach(f => sendFileToAll(f));
 
-    if(otherFiles.length === 1){
-      sendFileToAll(otherFiles[0]);
-    } else if(otherFiles.length > 1){
-      zipFiles(otherFiles, false).then(zipFile => sendFileToAll(zipFile)).catch(() => {
+    if(otherFiles.length === 1) sendFileToAll(otherFiles[0]);
+    else if(otherFiles.length > 1){
+      zipFiles(otherFiles, false).then(sendFileToAll).catch(() => {
         setStatus(callStatus, "Couldn't zip those files — sending separately.", "err");
         otherFiles.forEach(f => sendFileToAll(f));
       });
     }
   }
 
-  function zipFiles(files, preservePaths){
-    if(!window.JSZip){
-      return Promise.reject(new Error("JSZip not available"));
-    }
-
+  function zipFiles(files, preservePaths, rootName){
+    if(!window.JSZip) return Promise.reject(new Error("JSZip not available"));
     const zip = new JSZip();
+    const usedNames = new Set();
 
-    files.forEach((f, index) => {
-      // For folder selections, webkitRelativePath is the actual path relative
-      // to the selected folder. For ordinary multi-file selections, use names.
+    files.forEach((f,index) => {
       let name = preservePaths && f.webkitRelativePath
-        ? f.webkitRelativePath
-        : (f.name || `file-${index + 1}`);
+        ? f.webkitRelativePath.replace(/^[/\\]+/,"").replace(/\\/g,"/")
+        : (f.name || `file-${index+1}`);
 
-      // Strip an accidental leading slash but otherwise preserve directories.
-      name = name.replace(/^[/\\]+/, "").replace(/\\/g, "/");
+      if(preservePaths && rootName && !name.startsWith(rootName + "/"))
+        name = `${rootName}/${name}`;
 
-      // JSZip can handle zero-byte files correctly; do not skip them.
-      zip.file(name, f);
+      let finalName=name, i=1;
+      while(usedNames.has(finalName)){
+        const slash=finalName.lastIndexOf("/");
+        const dir=slash>=0 ? finalName.slice(0,slash+1) : "";
+        const base=slash>=0 ? finalName.slice(slash+1) : finalName;
+        const dot=base.lastIndexOf(".");
+        finalName=dot>0 ? `${dir}${base.slice(0,dot)} (${i})${base.slice(dot)}` : `${dir}${base} (${i})`;
+        i++;
+      }
+      usedNames.add(finalName);
+      zip.file(finalName,f);
     });
 
     return zip.generateAsync({
-      type: "blob",
-      compression: "DEFLATE",
-      compressionOptions: { level: 6 },
-      streamFiles: true
+      type:"blob",
+      compression: preservePaths ? "STORE" : "DEFLATE",
+      streamFiles:true
     }).then(blob => {
-      const stamp = new Date().toISOString().replace(/[:.]/g,"-").slice(0,19);
-      const prefix = preservePaths && files[0]?.webkitRelativePath
-        ? files[0].webkitRelativePath.split("/")[0]
-        : "files";
-      const safePrefix = (prefix || "files").replace(/[^\w.-]+/g, "_");
-      return new File([blob], `${safePrefix}-${stamp}.zip`, { type: "application/zip" });
+      const stamp=new Date().toISOString().replace(/[:.]/g,"-").slice(0,19);
+      const prefix=(rootName || (files[0]?.webkitRelativePath||"").split("/")[0] || "files")
+        .replace(/[^\w.-]+/g,"_");
+      return new File([blob],`${prefix}-${stamp}.zip`,{type:"application/zip"});
     });
   }
 
@@ -1243,8 +1273,8 @@
     // Each recipient gets its own reader/backpressure loop. A slow joiner no
     // longer throttles faster peers, and smaller chunks reduce memory pressure
     // and congestion on weaker connections.
-    const BUFFER_LIMIT = 8 * CHUNK_SIZE;
-    const DRAIN_THRESHOLD = 2 * CHUNK_SIZE;
+    const BUFFER_LIMIT = 4 * 1024 * 1024;
+    const DRAIN_THRESHOLD = 1024 * 1024;
 
     async function sendToPeer(target){
       const { peer, conn } = target;
