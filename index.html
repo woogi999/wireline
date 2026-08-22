@@ -34,12 +34,11 @@
     --border: #303038;
     --text: #f0f0f2;
     --muted: #8f8f9a;
-    --accent: #a78bfa;
-    --accent-soft: #2b2140;
+    /* --accent, --accent-soft, and --bubble-me are intentionally NOT
+       redefined here — the purple stays exactly the same in both themes. */
     --ok: #3ecb7e;
     --err: #ff6b5c;
-    --bubble-me: #a78bfa;
-    --bubble-me-text: #0e0e11;
+    --bubble-me-text: #ffffff;
     --bubble-them: #2a2a32;
     --video-bg: #0a0a0c;
     color-scheme: dark;
@@ -555,7 +554,7 @@
     </section>
 
     <footer>
-      Everything, chat, audio, video, and screen share, goes directly between browsers over a private connection. This page only helps the two of you connect. Close the tab and the room ends.<br>
+      Everything, chat, audio, video, screen share, and files, goes directly between browsers over a private connection. This page only helps the two of you connect and never sees, uploads, or stores the files themselves. Close the tab and the room ends.<br>
       Built with <a href="https://peerjs.com" target="_blank" rel="noopener">PeerJS</a>.
     </footer>
   </div>
@@ -570,6 +569,10 @@
             <button class="btn icon-only" id="themeToggleRoom" title="Toggle dark mode"><svg data-lucide="moon" class="icon" id="themeIconRoom"></svg></button>
             <button class="btn danger icon-only" id="leaveBtn" title="Leave"><svg data-lucide="log-out" class="icon"></svg></button>
           </div>
+        </div>
+        <div class="call-controls" style="margin-bottom:2px;">
+          <button class="btn" id="copyRoomCode" title="Copy room code"><svg data-lucide="copy" class="icon"></svg><span class="label-text">Copy code</span></button>
+          <button class="btn" id="copyRoomLink" title="Copy shareable link"><svg data-lucide="link-2" class="icon"></svg><span class="label-text">Copy link</span></button>
         </div>
 
         <div class="videos">
@@ -720,6 +723,8 @@
   const chatInput = document.getElementById("chatInput");
   const chatSendBtn = document.getElementById("chatSendBtn");
   const leaveBtn = document.getElementById("leaveBtn");
+  const copyRoomCode = document.getElementById("copyRoomCode");
+  const copyRoomLink = document.getElementById("copyRoomLink");
 
   function escapeHtml(s){
     return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -1101,14 +1106,41 @@
     });
   }
 
-  // Broadcasts one file to every connected peer at once. Each transfer gets
-  // its own id, so several transfers (or several peers) can be in flight at
-  // the same time without one waiting on another or corrupting a shared buffer.
-  // Chunks are sent in 64KB pieces (up from 16KB) and the sender only backs
-  // off when a peer's send buffer is genuinely full, checking again almost
-  // immediately rather than pausing 20ms every time — both cut real-world
-  // transfer time substantially on a healthy connection.
-  function sendFileToAll(file){
+  // Waits until every channel's outgoing buffer has drained back down,
+  // resolving the instant the browser fires 'bufferedamountlow' rather than
+  // on a fixed timer. This is what actually removes the artificial pauses
+  // that were slowing transfers down — the sender resumes the moment there's
+  // room, instead of guessing with a setTimeout.
+  function waitForDrain(dcs, threshold){
+    return new Promise((resolve) => {
+      let pending = dcs.length;
+      if(!pending){ resolve(); return; }
+      dcs.forEach((dc) => {
+        dc.bufferedAmountLowThreshold = threshold;
+        const onLow = () => {
+          dc.removeEventListener("bufferedamountlow", onLow);
+          pending--;
+          if(pending <= 0) resolve();
+        };
+        dc.addEventListener("bufferedamountlow", onLow);
+      });
+    });
+  }
+
+  // Broadcasts one file to every connected peer at once, reading straight
+  // off the local File handle (file.stream()) and pushing each chunk
+  // directly over the WebRTC data channel to the recipient(s). The file's
+  // bytes never leave the two browsers — the signaling server (and this
+  // page) only ever sees the room code and small JSON metadata like the
+  // filename and size, never the file content itself, and nothing is
+  // written to any server-side storage at any point.
+  //
+  // Each transfer gets its own id, so several transfers (or several peers)
+  // can be in flight at once without one waiting on another. Chunks are
+  // sent in 64KB pieces and backpressure is now event-driven (see
+  // waitForDrain) instead of polling on a timer, which is what makes this
+  // meaningfully faster than before.
+  async function sendFileToAll(file){
     const conns = [...peers.values()].map(p => p.dataConn).filter(c => c && c.open);
     if(!conns.length){ setStatus(callStatus, "Not connected to anyone yet.", "err"); return; }
 
@@ -1118,35 +1150,36 @@
     const refs = addFileMsg(file.name, url, "me", humanSize(file.size), file.type, null, true);
 
     const BUFFER_LIMIT = 16 * CHUNK_SIZE;
+    const DRAIN_THRESHOLD = 4 * CHUNK_SIZE;
     const reader = file.stream().getReader();
     let sent = 0;
-    function pump(){
-      reader.read().then(({done, value}) => {
-        if(done){
-          conns.forEach(c => { if(c.open) c.send({ type: "file-done", id: fileId }); });
-          refs.progressFill.style.width = "100%";
-          setTimeout(() => refs.progressTrack.classList.add("hidden"), 200);
-          return;
-        }
+
+    try{
+      while(true){
+        const { done, value } = await reader.read();
+        if(done) break;
+
         let offset = 0;
-        function sendSlice(){
-          if(offset >= value.length){ pump(); return; }
+        while(offset < value.length){
           const slice = value.slice(offset, offset + CHUNK_SIZE);
           conns.forEach(c => { if(c.open) c.send({ type: "file-chunk", id: fileId, data: slice }); });
           sent += slice.length;
           refs.progressFill.style.width = Math.min(100, (sent/file.size*100)).toFixed(1) + "%";
           offset += CHUNK_SIZE;
-          const maxBuffered = Math.max(0, ...conns.map(c => c.dataChannel ? c.dataChannel.bufferedAmount : 0));
+
+          const liveConns = conns.filter(c => c.open && c.dataChannel);
+          const maxBuffered = Math.max(0, ...liveConns.map(c => c.dataChannel.bufferedAmount));
           if(maxBuffered > BUFFER_LIMIT){
-            setTimeout(sendSlice, 5);
-          } else {
-            sendSlice();
+            await waitForDrain(liveConns.map(c => c.dataChannel), DRAIN_THRESHOLD);
           }
         }
-        sendSlice();
-      });
+      }
+      conns.forEach(c => { if(c.open) c.send({ type: "file-done", id: fileId }); });
+      refs.progressFill.style.width = "100%";
+      setTimeout(() => refs.progressTrack.classList.add("hidden"), 200);
+    }catch(e){
+      setStatus(callStatus, "That transfer stopped early — try again.", "err");
     }
-    pump();
   }
 
   // ---------- media (camera / mic / screen) ----------
@@ -1361,22 +1394,28 @@
     isHost = true;
     const peerId = codeToPeerId(code);
     startBtn.disabled = true;
-    setStatus(startStatus, isResume ? "Reopening your room…" : "Opening room…");
+
+    // The room code is generated up front, so there's no need to wait for
+    // a guest (or even for the signaling connection) before showing it —
+    // jump straight into the room and let the host share the code/link
+    // from right there.
+    enterRoom(code);
+    setStatus(callStatus, isResume ? "Reopening your room…" : "Setting up your room…", null, true);
 
     myPeer = new Peer(peerId, { debug: 0 });
     myPeer.on("open", (id) => {
       myId = id;
-      startCode.textContent = code;
-      startCodeBlock.classList.remove("hidden");
-      setStatus(startStatus, "Waiting for someone to join", null, true);
       setRoomUrl("host", code);
       saveSession("host", code, myName);
+      updateConnectionStatus();
     });
     myPeer.on("error", (err) => {
       if(err.type === "unavailable-id"){
         if(isResume){
-          // The old room ID is still alive somewhere (e.g. another tab) — start fresh instead.
+          // The old room ID is still alive somewhere (e.g. another tab) — back to landing to start fresh.
           clearSession(); clearRoomUrl();
+          roomView.classList.remove("open");
+          landing.style.display = "";
           startBtn.disabled = false;
           setStatus(startStatus, "That room is still open elsewhere. Start a new one below.", "err");
           return;
@@ -1386,12 +1425,11 @@
         startRoom(genCode(), name, false);
         return;
       }
-      setStatus(startStatus, "Something went wrong: " + err.type, "err");
+      setStatus(callStatus, "Something went wrong: " + err.type, "err");
       startBtn.disabled = false;
     });
     myPeer.on("connection", (conn) => {
       wireDataConn(conn);
-      if(!roomView.classList.contains("open")) enterRoom(code);
       updateConnectionStatus();
     });
     myPeer.on("call", handleIncomingCall);
@@ -1411,6 +1449,12 @@
   });
   copyStartLink.addEventListener("click", () => {
     navigator.clipboard.writeText(shareableLink(startCode.textContent)).then(() => flashCopied(copyStartLink));
+  });
+  copyRoomCode.addEventListener("click", () => {
+    navigator.clipboard.writeText(roomCodeTag.textContent).then(() => flashCopied(copyRoomCode));
+  });
+  copyRoomLink.addEventListener("click", () => {
+    navigator.clipboard.writeText(shareableLink(roomCodeTag.textContent)).then(() => flashCopied(copyRoomLink));
   });
 
   function joinRoom(code, name, isResume){
