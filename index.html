@@ -1109,8 +1109,10 @@
   function wireFullscreenButton(button, video, name){
     if(!button) return;
     const stop = e => {
+      // Stop the event from reaching the draggable/anchoring camera tile,
+      // but DO NOT preventDefault() here: doing so on pointer/mouse events
+      // can suppress the browser's synthetic click and break fullscreen.
       e.stopPropagation();
-      if(e.cancelable) e.preventDefault();
     };
     ["pointerdown","pointerup","mousedown","mouseup"].forEach(type => button.addEventListener(type, stop));
     button.addEventListener("click", e => {
@@ -1152,6 +1154,11 @@
 
   collapseMedia?.addEventListener("click", collapseMediaView);
 
+  // The camera tile has two modes:
+  // 1) floating: drag it normally; click anchors/opens the media stage.
+  // 2) anchored: dragging the camera itself OUT of the stage immediately
+  //    detaches it back into the floating position. This makes the anchor
+  //    reversible without requiring a separate hidden control.
   localBox.addEventListener("pointerdown", e => {
     if(e.target.closest(".media-fullscreen")) return;
     draggingLocal = true;
@@ -1163,20 +1170,33 @@
   });
 
   localBox.addEventListener("pointermove", e => {
-    if(!draggingLocal || mediaExpanded) return;
-    const dx = e.clientX - (localBox.getBoundingClientRect().left + dragDX);
-    const dy = e.clientY - (localBox.getBoundingClientRect().top + dragDY);
-    if(Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
+    if(!draggingLocal) return;
+
+    const r = localBox.getBoundingClientRect();
+    const moveX = e.clientX - (r.left + dragDX);
+    const moveY = e.clientY - (r.top + dragDY);
+    if(Math.abs(moveX) < 3 && Math.abs(moveY) < 3) return;
     dragMoved = true;
+
+    // If anchored, the first real drag detaches it from the media stage.
+    if(mediaExpanded){
+      collapseMediaView();
+      // Recalculate the pointer offset after reparenting.
+      const nr = localBox.getBoundingClientRect();
+      dragDX = Math.max(0, Math.min(nr.width, e.clientX - nr.left));
+      dragDY = Math.max(0, Math.min(nr.height, e.clientY - nr.top));
+    }
+
     localBox.style.left = Math.max(8, Math.min(window.innerWidth-localBox.offsetWidth-8, e.clientX-dragDX)) + "px";
     localBox.style.top = Math.max(8, Math.min(window.innerHeight-localBox.offsetHeight-8, e.clientY-dragDY)) + "px";
     localBox.style.right = "auto";
     localBox.style.bottom = "auto";
   });
 
-  localBox.addEventListener("pointerup", () => {
+  localBox.addEventListener("pointerup", e => {
     if(!draggingLocal) return;
     draggingLocal = false;
+    try{ localBox.releasePointerCapture?.(e.pointerId); }catch(err){}
     if(!dragMoved && !mediaExpanded) expandMedia();
   });
   localBox.addEventListener("pointercancel", () => { draggingLocal = false; });
