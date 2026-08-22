@@ -2,24 +2,28 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
 <title>Wireline — talk and share</title>
 <meta name="description" content="Chat, call, and share your screen straight from your browser. No upload, no account.">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
+<script src="https://unpkg.com/lucide@0.462.0/dist/umd/lucide.js"></script>
 <style>
   :root{
     --bg: #ffffff;
-    --panel: #f6f6f7;
-    --border: #e2e2e4;
-    --text: #1a1a1a;
-    --muted: #767676;
+    --panel: #f7f7f8;
+    --border: #e5e5e8;
+    --text: #18181b;
+    --muted: #83838c;
     --accent: #2563eb;
+    --accent-soft: #eaf0ff;
     --ok: #1a7f45;
     --err: #c0392b;
     --bubble-me: #2563eb;
     --bubble-me-text: #ffffff;
-    --bubble-them: #eef0f2;
+    --bubble-them: #eef0f3;
+    --radius: 14px;
     --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --ease: cubic-bezier(.2,.8,.2,1);
   }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;}
@@ -28,22 +32,31 @@
     color:var(--text);
     font-family:var(--font);
     line-height:1.5;
+    -webkit-tap-highlight-color:transparent;
   }
   @media (prefers-reduced-motion: reduce){
     *{animation-duration:0.001ms !important; transition-duration:0.001ms !important;}
   }
+  svg.icon{width:18px; height:18px; stroke-width:2; flex-shrink:0; vertical-align:-4px;}
 
   .wrap{
     max-width:560px;
     margin:0 auto;
     padding:32px 16px 48px;
+    animation:fadeIn .35s var(--ease);
   }
+  @keyframes fadeIn{ from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:translateY(0);} }
 
   h1{
-    font-size:22px;
-    font-weight:600;
-    margin:0 0 8px;
+    font-size:23px;
+    font-weight:700;
+    margin:0 0 6px;
+    letter-spacing:-0.01em;
+    display:flex;
+    align-items:center;
+    gap:8px;
   }
+  h1 svg{width:22px; height:22px; color:var(--accent);}
   p.lead{
     color:var(--muted);
     font-size:15px;
@@ -52,48 +65,72 @@
 
   .tabs{
     display:flex;
-    border-bottom:1px solid var(--border);
+    background:var(--panel);
+    border-radius:10px;
+    padding:3px;
     margin-bottom:20px;
+    position:relative;
   }
   .tab{
-    padding:10px 4px;
-    margin-right:24px;
-    font-size:15px;
-    font-weight:500;
+    flex:1;
+    padding:9px 4px;
+    font-size:14px;
+    font-weight:600;
     color:var(--muted);
     background:none;
     border:none;
-    border-bottom:2px solid transparent;
+    border-radius:8px;
     cursor:pointer;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:6px;
+    transition:color .2s var(--ease);
+    z-index:1;
   }
-  .tab.active{color:var(--text); border-bottom-color:var(--accent);}
-  .tab:hover:not(.active){color:var(--text);}
+  .tab.active{color:var(--accent);}
+  .tab-bg{
+    position:absolute;
+    top:3px; bottom:3px;
+    left:3px;
+    width:calc(50% - 3px);
+    background:var(--bg);
+    border-radius:8px;
+    box-shadow:0 1px 4px rgba(0,0,0,0.08);
+    transition:transform .25s var(--ease);
+  }
+  .tab-bg.right{transform:translateX(100%);}
 
   .panel{
     border:1px solid var(--border);
-    border-radius:8px;
-    padding:20px;
+    border-radius:var(--radius);
+    padding:22px;
     background:var(--panel);
+    animation:fadeIn .25s var(--ease);
   }
 
   label{
     display:block;
     font-size:13px;
+    font-weight:600;
     color:var(--muted);
     margin-bottom:8px;
   }
 
   .dropzone{
-    border:1px dashed var(--border);
-    border-radius:6px;
-    padding:24px 16px;
+    border:1.5px dashed var(--border);
+    border-radius:10px;
+    padding:28px 16px;
     text-align:center;
     cursor:pointer;
     background:var(--bg);
+    transition:border-color .2s var(--ease), background .2s var(--ease), transform .15s var(--ease);
   }
-  .dropzone:hover, .dropzone.drag{border-color:var(--accent);}
+  .dropzone:hover, .dropzone.drag{border-color:var(--accent); background:var(--accent-soft);}
+  .dropzone.drag{transform:scale(1.01);}
   .dropzone input{display:none;}
-  .dropzone .hint{color:var(--muted); font-size:14px;}
+  .dropzone .hint{color:var(--muted); font-size:14px; display:flex; flex-direction:column; align-items:center; gap:8px;}
+  .dropzone .hint svg{color:var(--muted);}
   .dropzone .fname{font-size:14px; color:var(--text); word-break:break-all;}
 
   .code-row{display:flex; gap:8px; margin-top:16px;}
@@ -101,62 +138,88 @@
     flex:1;
     font-family:ui-monospace, "SFMono-Regular", Consolas, monospace;
     font-size:16px;
+    font-weight:600;
     background:var(--bg);
     border:1px solid var(--border);
-    border-radius:6px;
-    padding:10px 12px;
+    border-radius:9px;
+    padding:11px 12px;
     text-align:center;
     user-select:all;
+    letter-spacing:0.02em;
   }
 
   .btn{
     font-size:14px;
-    font-weight:500;
-    padding:10px 16px;
-    border-radius:6px;
+    font-weight:600;
+    padding:11px 16px;
+    border-radius:9px;
     border:1px solid var(--border);
     background:var(--bg);
     color:var(--text);
     cursor:pointer;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    gap:7px;
+    transition:border-color .15s var(--ease), color .15s var(--ease), background .15s var(--ease), transform .1s var(--ease);
+    -webkit-user-select:none; user-select:none;
   }
   .btn:hover{border-color:var(--accent); color:var(--accent);}
+  .btn:active{transform:scale(0.97);}
   .btn:focus-visible, input:focus-visible, .dropzone:focus-visible{
     outline:2px solid var(--accent);
     outline-offset:2px;
   }
   .btn.primary{background:var(--accent); color:#fff; border-color:var(--accent);}
-  .btn.primary:hover{opacity:0.9; color:#fff;}
-  .btn.danger{color:var(--err); border-color:var(--err);}
-  .btn.danger:hover{background:var(--err); color:#fff;}
+  .btn.primary:hover{opacity:0.92; color:#fff;}
+  .btn.danger{color:var(--err); border-color:var(--border);}
+  .btn.danger:hover{background:var(--err); color:#fff; border-color:var(--err);}
   .btn.active-toggle{background:var(--accent); color:#fff; border-color:var(--accent);}
-  .btn:disabled{opacity:0.5; cursor:not-allowed;}
+  .btn:disabled{opacity:0.5; cursor:not-allowed; transform:none;}
   .btn.block{width:100%; margin-top:12px;}
-  .btn.icon{padding:10px 14px; font-size:16px; line-height:1;}
+  .btn.icon-only{padding:11px; border-radius:50%; width:44px; height:44px;}
 
   input[type=text]{
     font-size:15px;
     background:var(--bg);
     border:1px solid var(--border);
     color:var(--text);
-    border-radius:6px;
-    padding:10px 12px;
+    border-radius:9px;
+    padding:11px 12px;
     width:100%;
+    transition:border-color .15s var(--ease);
   }
+  input[type=text]:focus{border-color:var(--accent);}
 
-  .status{font-size:13px; color:var(--muted); margin-top:12px;}
+  .status{
+    font-size:13px;
+    color:var(--muted);
+    margin-top:12px;
+    display:flex;
+    align-items:center;
+    gap:6px;
+    min-height:18px;
+  }
   .status.ok{color:var(--ok);}
   .status.err{color:var(--err);}
+  .pulse-dot{
+    width:7px; height:7px; border-radius:50%;
+    background:var(--muted);
+    flex-shrink:0;
+  }
+  .status.ok .pulse-dot{background:var(--ok); animation:pulse 1.6s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{opacity:1; box-shadow:0 0 0 0 rgba(26,127,69,0.4);} 50%{opacity:0.6; box-shadow:0 0 0 4px rgba(26,127,69,0);}}
 
   .progress-track{
-    height:4px;
+    height:5px;
     background:var(--border);
-    border-radius:2px;
+    border-radius:3px;
     overflow:hidden;
     margin-top:12px;
   }
-  .progress-fill{height:100%; width:0%; background:var(--accent); transition:width .12s linear;}
+  .progress-fill{height:100%; width:0%; background:var(--accent); transition:width .15s var(--ease); border-radius:3px;}
 
-  footer{margin-top:28px; font-size:13px; color:var(--muted);}
+  footer{margin-top:28px; font-size:12.5px; color:var(--muted); line-height:1.6;}
   footer a{color:var(--accent); text-decoration:none;}
   footer a:hover{text-decoration:underline;}
 
@@ -164,71 +227,89 @@
 
   /* --- room view --- */
   #roomView{display:none;}
-  #roomView.open{display:block;}
+  #roomView.open{display:block; animation:fadeIn .3s var(--ease);}
 
   .videos{
     display:grid;
     grid-template-columns:1fr 1fr;
     gap:8px;
-    margin-bottom:12px;
+    margin-bottom:14px;
   }
   .video-box{
     position:relative;
-    background:#111;
-    border-radius:8px;
+    background:#111318;
+    border-radius:var(--radius);
     overflow:hidden;
     aspect-ratio:4/3;
+    transition:box-shadow .2s var(--ease);
   }
   .video-box video{width:100%; height:100%; object-fit:cover; display:block;}
   .video-box .label{
     position:absolute;
-    bottom:6px; left:8px;
+    bottom:8px; left:10px;
     font-size:12px;
+    font-weight:600;
     color:#fff;
-    background:rgba(0,0,0,0.5);
-    padding:2px 6px;
-    border-radius:4px;
+    background:rgba(0,0,0,0.55);
+    backdrop-filter:blur(4px);
+    padding:3px 9px;
+    border-radius:20px;
+    display:flex;
+    align-items:center;
+    gap:5px;
   }
+  .video-box .label svg{width:12px; height:12px;}
   .video-box.empty{display:flex; align-items:center; justify-content:center;}
-  .video-box.empty .placeholder{color:#888; font-size:13px;}
+  .video-box.empty .placeholder{
+    color:#71717a;
+    font-size:13px;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:8px;
+  }
+  .video-box.speaking{box-shadow:0 0 0 2px var(--accent);}
 
   .call-controls{
     display:flex;
     gap:8px;
     flex-wrap:wrap;
-    margin-bottom:16px;
+    margin-bottom:14px;
   }
 
   .chat-log{
-    height:280px;
+    height:300px;
     overflow-y:auto;
     border:1px solid var(--border);
-    border-radius:8px;
-    padding:12px;
+    border-radius:var(--radius);
+    padding:14px;
     background:var(--bg);
     display:flex;
     flex-direction:column;
     gap:8px;
     margin-bottom:10px;
+    scroll-behavior:smooth;
   }
   .msg{
-    max-width:75%;
-    padding:8px 12px;
-    border-radius:14px;
+    max-width:78%;
+    padding:9px 13px;
+    border-radius:16px;
     font-size:14px;
     word-break:break-word;
+    animation:msgIn .22s var(--ease);
   }
+  @keyframes msgIn{ from{opacity:0; transform:translateY(6px) scale(0.98);} to{opacity:1; transform:translateY(0) scale(1);} }
   .msg.me{
     align-self:flex-end;
     background:var(--bubble-me);
     color:var(--bubble-me-text);
-    border-bottom-right-radius:4px;
+    border-bottom-right-radius:5px;
   }
   .msg.them{
     align-self:flex-start;
     background:var(--bubble-them);
     color:var(--text);
-    border-bottom-left-radius:4px;
+    border-bottom-left-radius:5px;
   }
   .msg.system{
     align-self:center;
@@ -236,13 +317,41 @@
     color:var(--muted);
     font-size:12px;
     max-width:100%;
+    padding:2px;
   }
   .msg .file-chip{
     display:flex;
     align-items:center;
     gap:8px;
   }
-  .msg .file-chip a{color:inherit; font-weight:600; text-decoration:underline;}
+  .msg .file-chip a{color:inherit; font-weight:600; text-decoration:underline; font-size:13.5px;}
+  .msg .file-chip svg{flex-shrink:0;}
+  .msg .file-size{opacity:0.75; font-size:11.5px;}
+
+  .img-preview{
+    display:block;
+    max-width:220px;
+    max-height:220px;
+    border-radius:12px;
+    margin-bottom:6px;
+    cursor:zoom-in;
+    transition:opacity .15s ease;
+  }
+  .img-preview:hover{opacity:0.9;}
+
+  .lightbox{
+    position:fixed;
+    inset:0;
+    background:rgba(10,10,12,0.9);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    z-index:50;
+    padding:24px;
+    animation:fadeIn .18s var(--ease);
+    cursor:zoom-out;
+  }
+  .lightbox img{max-width:100%; max-height:100%; border-radius:8px; box-shadow:0 10px 40px rgba(0,0,0,0.5);}
 
   .chat-input-row{display:flex; gap:8px;}
   .chat-input-row input[type=text]{flex:1;}
@@ -257,10 +366,17 @@
     font-family:ui-monospace, "SFMono-Regular", Consolas, monospace;
     font-size:13px;
     color:var(--muted);
+    display:flex;
+    align-items:center;
+    gap:6px;
   }
+  .room-header .code-tag svg{width:14px; height:14px;}
 
   @media (max-width:420px){
     .videos{grid-template-columns:1fr;}
+    .wrap{padding:20px 12px 32px;}
+    .call-controls .btn span.label-text{display:none;}
+    .call-controls .btn{padding:11px; border-radius:50%; width:44px; height:44px;}
   }
 </style>
 </head>
@@ -268,26 +384,28 @@
 <div class="wrap">
 
   <div id="landing">
-    <h1>Wireline</h1>
-    <p class="lead">Open a room, share the code, and talk. Chat, camera, mic, and screen share, straight between two browsers. Nothing is uploaded anywhere.</p>
+    <h1><svg data-lucide="radio"></svg>Wireline</h1>
+    <p class="lead">Open a room, share the code, and talk. Chat, camera, mic, and screen share, straight between two browsers.</p>
 
     <div class="tabs" role="tablist">
-      <button class="tab active" id="tabStart" role="tab" aria-selected="true">Start a room</button>
-      <button class="tab" id="tabJoin" role="tab" aria-selected="false">Join a room</button>
+      <div class="tab-bg" id="tabBg"></div>
+      <button class="tab active" id="tabStart" role="tab" aria-selected="true"><svg data-lucide="plus-circle" class="icon"></svg>Start</button>
+      <button class="tab" id="tabJoin" role="tab" aria-selected="false"><svg data-lucide="log-in" class="icon"></svg>Join</button>
     </div>
 
     <!-- START -->
     <section id="startPanel" class="panel">
       <label>Your name</label>
       <input type="text" id="startName" placeholder="e.g. Sam" maxlength="24">
-      <button class="btn primary block" id="startBtn">Open room</button>
+      <button class="btn primary block" id="startBtn"><svg data-lucide="door-open" class="icon"></svg>Open room</button>
       <div id="startCodeBlock" class="hidden" style="margin-top:16px;">
         <label>Share this code</label>
         <div class="code-row">
           <div class="code" id="startCode">— — — —</div>
-          <button class="btn" id="copyStartCode">Copy</button>
+          <button class="btn" id="copyStartCode" title="Copy code"><svg data-lucide="copy" class="icon"></svg></button>
+          <button class="btn" id="copyStartLink" title="Copy shareable link"><svg data-lucide="link-2" class="icon"></svg></button>
         </div>
-        <div class="status" id="startStatus">Waiting for someone to join</div>
+        <div class="status" id="startStatus"><span class="pulse-dot"></span>Waiting for someone to join</div>
       </div>
     </section>
 
@@ -297,7 +415,7 @@
       <input type="text" id="joinName" placeholder="e.g. Alex" maxlength="24">
       <label style="margin-top:12px;">Room code</label>
       <input type="text" id="joinCode" placeholder="e.g. amber-7-fox-quartz" maxlength="40">
-      <button class="btn primary block" id="joinBtn">Join room</button>
+      <button class="btn primary block" id="joinBtn"><svg data-lucide="link" class="icon"></svg>Join room</button>
       <div class="status" id="joinStatus">Enter a code to join</div>
     </section>
 
@@ -310,27 +428,27 @@
   <!-- ROOM -->
   <div id="roomView">
     <div class="room-header">
-      <div class="code-tag" id="roomCodeTag"></div>
-      <button class="btn danger" id="leaveBtn">Leave</button>
+      <div class="code-tag"><svg data-lucide="hash"></svg><span id="roomCodeTag"></span></div>
+      <button class="btn danger" id="leaveBtn"><svg data-lucide="log-out" class="icon"></svg>Leave</button>
     </div>
 
     <div class="videos">
       <div class="video-box" id="localBox">
         <video id="localVideo" autoplay playsinline muted></video>
-        <div class="label" id="localLabel">You</div>
+        <div class="label" id="localLabel"><svg data-lucide="user"></svg>You</div>
       </div>
       <div class="video-box empty" id="remoteBox">
         <video id="remoteVideo" autoplay playsinline class="hidden"></video>
-        <div class="placeholder" id="remotePlaceholder">Waiting for video</div>
-        <div class="label hidden" id="remoteLabel">Them</div>
+        <div class="placeholder" id="remotePlaceholder"><svg data-lucide="video-off"></svg>Waiting for video</div>
+        <div class="label hidden" id="remoteLabel"><svg data-lucide="user"></svg>Them</div>
       </div>
     </div>
 
     <div class="call-controls">
-      <button class="btn icon" id="micBtn" title="Toggle microphone">Mic: off</button>
-      <button class="btn icon" id="camBtn" title="Toggle camera">Camera: off</button>
-      <button class="btn icon" id="screenBtn" title="Share your screen">Share screen</button>
-      <button class="btn icon" id="fileBtn" title="Send a file">Send file</button>
+      <button class="btn icon-only" id="micBtn" title="Toggle microphone"><svg data-lucide="mic-off" class="icon" id="micIcon"></svg></button>
+      <button class="btn icon-only" id="camBtn" title="Toggle camera"><svg data-lucide="video-off" class="icon" id="camIcon"></svg></button>
+      <button class="btn icon-only" id="screenBtn" title="Share your screen"><svg data-lucide="monitor-up" class="icon" id="screenIcon"></svg></button>
+      <button class="btn icon-only" id="fileBtn" title="Send a file"><svg data-lucide="paperclip" class="icon"></svg></button>
       <input type="file" id="fileInput" class="hidden">
     </div>
     <div class="status" id="callStatus"></div>
@@ -339,7 +457,7 @@
     <div class="chat-log" id="chatLog"></div>
     <div class="chat-input-row">
       <input type="text" id="chatInput" placeholder="Write a message">
-      <button class="btn primary" id="chatSendBtn">Send</button>
+      <button class="btn primary icon-only" id="chatSendBtn"><svg data-lucide="send" class="icon"></svg></button>
     </div>
   </div>
 
@@ -348,6 +466,9 @@
 <script>
 (function(){
   "use strict";
+
+  function icons(){ try{ if(window.lucide && lucide.createIcons) lucide.createIcons(); }catch(e){ console.warn("icon render failed", e); } }
+  icons();
 
   const WORDS = ["amber","fox","quartz","delta","harbor","ember","north","cinder","willow","zephyr","onyx","raven","cobalt","juniper","tundra","ash","vapor","granite","lumen","echo"];
   function genCode(){
@@ -358,8 +479,16 @@
   function codeToPeerId(code){
     return "wireline-" + code.trim().toLowerCase().replace(/[^a-z0-9-]/g,"");
   }
-  function setStatus(el, text, mode){
-    el.textContent = text;
+  function setStatus(el, text, mode, withDot){
+    el.innerHTML = "";
+    if(withDot){
+      const dot = document.createElement("span");
+      dot.className = "pulse-dot";
+      el.appendChild(dot);
+    }
+    const span = document.createElement("span");
+    span.textContent = text;
+    el.appendChild(span);
     el.classList.remove("ok","err");
     if(mode) el.classList.add(mode);
   }
@@ -369,20 +498,27 @@
     if(bytes < 1024*1024*1024) return (bytes/1024/1024).toFixed(1) + " MB";
     return (bytes/1024/1024/1024).toFixed(2) + " GB";
   }
+  function isImage(mime, name){
+    if(mime && mime.startsWith("image/")) return true;
+    return /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(name || "");
+  }
 
   // ---------- landing tabs ----------
   const tabStart = document.getElementById("tabStart");
   const tabJoin = document.getElementById("tabJoin");
+  const tabBg = document.getElementById("tabBg");
   const startPanel = document.getElementById("startPanel");
   const joinPanel = document.getElementById("joinPanel");
   tabStart.addEventListener("click", () => {
     tabStart.classList.add("active"); tabStart.setAttribute("aria-selected","true");
     tabJoin.classList.remove("active"); tabJoin.setAttribute("aria-selected","false");
+    tabBg.classList.remove("right");
     startPanel.classList.remove("hidden"); joinPanel.classList.add("hidden");
   });
   tabJoin.addEventListener("click", () => {
     tabJoin.classList.add("active"); tabJoin.setAttribute("aria-selected","true");
     tabStart.classList.remove("active"); tabStart.setAttribute("aria-selected","false");
+    tabBg.classList.add("right");
     joinPanel.classList.remove("hidden"); startPanel.classList.add("hidden");
   });
 
@@ -390,7 +526,7 @@
   let myPeer = null;
   let dataConn = null;
   let mediaConn = null;
-  let localStream = null;   // camera/mic stream (may have disabled tracks)
+  let localStream = null;
   let screenStream = null;
   let myName = "You";
   let theirName = "Them";
@@ -421,7 +557,8 @@
     landing.style.display = "none";
     roomView.classList.add("open");
     roomCodeTag.textContent = code;
-    localLabel.textContent = myName;
+    localLabel.innerHTML = '<svg data-lucide="user"></svg>' + myName;
+    icons();
   }
 
   function addMsg(text, kind){
@@ -432,14 +569,24 @@
     chatLog.scrollTop = chatLog.scrollHeight;
   }
 
-  function addFileMsg(name, url, kind, sizeLabel){
+  function addFileMsg(name, url, kind, sizeLabel, mime){
     const div = document.createElement("div");
     div.className = "msg " + kind;
+
+    if(url && isImage(mime, name)){
+      const img = document.createElement("img");
+      img.src = url;
+      img.className = "img-preview";
+      img.alt = name;
+      img.addEventListener("click", () => openLightbox(url));
+      div.appendChild(img);
+    }
+
     const chip = document.createElement("div");
     chip.className = "file-chip";
-    const label = document.createElement("span");
-    label.textContent = "📎";
-    chip.appendChild(label);
+    const iconSvg = document.createElement("span");
+    iconSvg.innerHTML = url && isImage(mime,name) ? '<svg data-lucide="image" class="icon"></svg>' : '<svg data-lucide="file" class="icon"></svg>';
+    chip.appendChild(iconSvg);
     if(url){
       const a = document.createElement("a");
       a.href = url;
@@ -453,14 +600,24 @@
     }
     if(sizeLabel){
       const size = document.createElement("span");
-      size.style.opacity = "0.75";
-      size.style.fontSize = "12px";
+      size.className = "file-size";
       size.textContent = sizeLabel;
       chip.appendChild(size);
     }
     div.appendChild(chip);
     chatLog.appendChild(div);
     chatLog.scrollTop = chatLog.scrollHeight;
+    icons();
+  }
+
+  function openLightbox(url){
+    const box = document.createElement("div");
+    box.className = "lightbox";
+    const img = document.createElement("img");
+    img.src = url;
+    box.appendChild(img);
+    box.addEventListener("click", () => box.remove());
+    document.body.appendChild(box);
   }
 
   // ---------- data channel wiring (chat + file transfer) ----------
@@ -469,7 +626,7 @@
   function wireDataConn(conn){
     dataConn = conn;
     conn.on("open", () => {
-      setStatus(callStatus, "Connected", "ok");
+      setStatus(callStatus, "Connected", "ok", true);
       addMsg(`${theirName} joined`, "system");
       conn.send({ type: "hello", name: myName });
     });
@@ -486,7 +643,8 @@
   function handleData(msg){
     if(msg.type === "hello"){
       theirName = msg.name || "Them";
-      remoteLabel.textContent = theirName;
+      remoteLabel.innerHTML = '<svg data-lucide="user"></svg>' + theirName;
+      icons();
     } else if(msg.type === "chat"){
       addMsg(msg.text, "them");
     } else if(msg.type === "file-meta"){
@@ -502,7 +660,7 @@
       if(!incomingFile) return;
       const blob = new Blob(incomingFile.chunks, { type: incomingFile.mime || "application/octet-stream" });
       const url = URL.createObjectURL(blob);
-      addFileMsg(incomingFile.name, url, "them", humanSize(incomingFile.size));
+      addFileMsg(incomingFile.name, url, "them", humanSize(incomingFile.size), incomingFile.mime);
       fileProgressTrack.classList.add("hidden");
       fileProgressFill.style.width = "0%";
       incomingFile = null;
@@ -522,12 +680,14 @@
   fileBtn.addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", (e) => {
     if(e.target.files.length) sendFileOverData(e.target.files[0]);
+    fileInput.value = "";
   });
 
   function sendFileOverData(file){
     if(!dataConn || !dataConn.open){ setStatus(callStatus, "Not connected yet.", "err"); return; }
     dataConn.send({ type: "file-meta", name: file.name, size: file.size, mime: file.type });
-    addFileMsg(file.name, null, "me", humanSize(file.size));
+    const url = isImage(file.type, file.name) ? URL.createObjectURL(file) : null;
+    addFileMsg(file.name, url, "me", humanSize(file.size), file.type);
     fileProgressTrack.classList.remove("hidden");
 
     const reader = file.stream().getReader();
@@ -571,7 +731,7 @@
   async function callPeerIfPossible(){
     if(!myPeer) return;
     const targetId = codeToPeerId(roomCodeTag.textContent);
-    if(mediaConn) return; // already have a call up
+    if(mediaConn) return;
     if(!localStream || localStream.getTracks().length === 0) return;
     mediaConn = myPeer.call(targetId, localStream);
     wireMediaConn(mediaConn);
@@ -593,6 +753,11 @@
 
   let micOn = false, camOn = false, sharingScreen = false;
 
+  function setIcon(el, name){
+    el.setAttribute("data-lucide", name);
+    icons();
+  }
+
   micBtn.addEventListener("click", async () => {
     await ensureLocalStream();
     if(!micOn){
@@ -601,8 +766,8 @@
         s.getAudioTracks().forEach(t => localStream.addTrack(t));
         localVideo.srcObject = localStream;
         micOn = true;
-        micBtn.textContent = "Mic: on";
         micBtn.classList.add("active-toggle");
+        setIcon(document.getElementById("micIcon"), "mic");
         maybeUpdateOutgoingCall();
         if(!mediaConn) callPeerIfPossible();
       }catch(e){
@@ -611,8 +776,8 @@
     } else {
       localStream.getAudioTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
       micOn = false;
-      micBtn.textContent = "Mic: off";
       micBtn.classList.remove("active-toggle");
+      setIcon(document.getElementById("micIcon"), "mic-off");
       maybeUpdateOutgoingCall();
     }
   });
@@ -625,8 +790,8 @@
         s.getVideoTracks().forEach(t => localStream.addTrack(t));
         localVideo.srcObject = localStream;
         camOn = true;
-        camBtn.textContent = "Camera: on";
         camBtn.classList.add("active-toggle");
+        setIcon(document.getElementById("camIcon"), "video");
         maybeUpdateOutgoingCall();
         if(!mediaConn) callPeerIfPossible();
       }catch(e){
@@ -635,8 +800,8 @@
     } else {
       localStream.getVideoTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
       camOn = false;
-      camBtn.textContent = "Camera: off";
       camBtn.classList.remove("active-toggle");
+      setIcon(document.getElementById("camIcon"), "video-off");
       maybeUpdateOutgoingCall();
     }
   });
@@ -651,13 +816,13 @@
         localStream.addTrack(track);
         localVideo.srcObject = localStream;
         sharingScreen = true;
-        screenBtn.textContent = "Stop sharing";
         screenBtn.classList.add("active-toggle");
+        setIcon(document.getElementById("screenIcon"), "monitor-x");
         maybeUpdateOutgoingCall();
         if(!mediaConn) callPeerIfPossible();
         track.addEventListener("ended", stopScreenShare);
       }catch(e){
-        // user cancelled the picker — ignore
+        // user cancelled the picker
       }
     } else {
       stopScreenShare();
@@ -673,32 +838,61 @@
       localStream.getVideoTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
     }
     sharingScreen = false;
-    screenBtn.textContent = "Share screen";
     screenBtn.classList.remove("active-toggle");
+    setIcon(document.getElementById("screenIcon"), "monitor-up");
     camOn = false;
-    camBtn.textContent = "Camera: off";
     camBtn.classList.remove("active-toggle");
+    setIcon(document.getElementById("camIcon"), "video-off");
     maybeUpdateOutgoingCall();
   }
 
   function maybeUpdateOutgoingCall(){
-    // Renegotiate by replacing the outgoing call's tracks via a fresh call,
-    // since PeerJS MediaConnection doesn't expose renegotiation directly.
     if(!mediaConn || !mediaConn.peerConnection) return;
     const pc = mediaConn.peerConnection;
     const senders = pc.getSenders();
     localStream.getTracks().forEach(track => {
       const sender = senders.find(s => s.track && s.track.kind === track.kind);
-      if(sender){
-        sender.replaceTrack(track);
-      }
+      if(sender) sender.replaceTrack(track);
     });
-    // remove senders whose kind no longer has a live track
     senders.forEach(sender => {
       if(sender.track && !localStream.getTracks().some(t => t.kind === sender.track.kind && t.readyState === "live")){
         try{ sender.replaceTrack(null); }catch(e){}
       }
     });
+  }
+
+  // ---------- URL + session persistence ----------
+  // A room's address lives in the URL (?room=CODE&host=1) so refreshing, or
+  // sending the link to someone else, gets them straight back to the room.
+  // The name is kept in sessionStorage (per-tab) so a refresh doesn't ask again.
+  const SESSION_KEY = "wireline_session";
+
+  function saveSession(role, code, name){
+    try{ sessionStorage.setItem(SESSION_KEY, JSON.stringify({ role, code, name })); }catch(e){}
+  }
+  function clearSession(){
+    try{ sessionStorage.removeItem(SESSION_KEY); }catch(e){}
+  }
+  function loadSession(){
+    try{ return JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null"); }catch(e){ return null; }
+  }
+  function setRoomUrl(role, code){
+    const url = new URL(location.href);
+    url.search = "";
+    url.searchParams.set("room", code);
+    if(role === "host") url.searchParams.set("host", "1");
+    history.replaceState(null, "", url.toString());
+  }
+  function shareableLink(code){
+    const url = new URL(location.href);
+    url.search = "";
+    url.searchParams.set("room", code);
+    return url.toString();
+  }
+  function clearRoomUrl(){
+    const url = new URL(location.href);
+    url.search = "";
+    history.replaceState(null, "", url.toString());
   }
 
   // ---------- start / join / leave ----------
@@ -707,26 +901,52 @@
   const startCodeBlock = document.getElementById("startCodeBlock");
   const startCode = document.getElementById("startCode");
   const copyStartCode = document.getElementById("copyStartCode");
+  const copyStartLink = document.getElementById("copyStartLink");
   const startStatus = document.getElementById("startStatus");
+  const joinName = document.getElementById("joinName");
+  const joinCode = document.getElementById("joinCode");
+  const joinBtn = document.getElementById("joinBtn");
+  const joinStatus = document.getElementById("joinStatus");
 
-  startBtn.addEventListener("click", () => {
-    myName = startName.value.trim() || "You";
-    const code = genCode();
+  function flashCopied(btn){
+    const icon = btn.querySelector("svg");
+    const prevName = icon.getAttribute("data-lucide");
+    setIcon(icon, "check");
+    btn.style.color = "var(--ok)";
+    btn.style.borderColor = "var(--ok)";
+    setTimeout(() => {
+      setIcon(btn.querySelector("svg"), prevName);
+      btn.style.color = "";
+      btn.style.borderColor = "";
+    }, 1400);
+  }
+
+  function startRoom(code, name, isResume){
+    myName = name || "You";
     const peerId = codeToPeerId(code);
     startBtn.disabled = true;
-    setStatus(startStatus, "Opening room…");
+    setStatus(startStatus, isResume ? "Reopening your room…" : "Opening room…");
 
     myPeer = new Peer(peerId, { debug: 0 });
     myPeer.on("open", () => {
       startCode.textContent = code;
       startCodeBlock.classList.remove("hidden");
-      setStatus(startStatus, "Waiting for someone to join");
+      setStatus(startStatus, "Waiting for someone to join", null, true);
+      setRoomUrl("host", code);
+      saveSession("host", code, myName);
     });
     myPeer.on("error", (err) => {
       if(err.type === "unavailable-id"){
+        if(isResume){
+          // The old room ID is still alive somewhere (e.g. another tab) — start fresh instead.
+          clearSession(); clearRoomUrl();
+          startBtn.disabled = false;
+          setStatus(startStatus, "That room is still open elsewhere. Start a new one below.", "err");
+          return;
+        }
         myPeer.destroy();
         startBtn.disabled = false;
-        startBtn.click();
+        startRoom(genCode(), name, false);
         return;
       }
       setStatus(startStatus, "Something went wrong: " + err.type, "err");
@@ -741,39 +961,43 @@
       mediaConn = call;
       wireMediaConn(call);
     });
+  }
+
+  let resumeCode = null;
+  startBtn.addEventListener("click", () => {
+    if(resumeCode){
+      startRoom(resumeCode, startName.value.trim(), true);
+    } else {
+      startRoom(genCode(), startName.value.trim(), false);
+    }
   });
 
   copyStartCode.addEventListener("click", () => {
-    navigator.clipboard.writeText(startCode.textContent).then(() => {
-      const old = copyStartCode.textContent;
-      copyStartCode.textContent = "Copied";
-      setTimeout(() => copyStartCode.textContent = old, 1400);
-    });
+    navigator.clipboard.writeText(startCode.textContent).then(() => flashCopied(copyStartCode));
+  });
+  copyStartLink.addEventListener("click", () => {
+    navigator.clipboard.writeText(shareableLink(startCode.textContent)).then(() => flashCopied(copyStartLink));
   });
 
-  const joinName = document.getElementById("joinName");
-  const joinCode = document.getElementById("joinCode");
-  const joinBtn = document.getElementById("joinBtn");
-  const joinStatus = document.getElementById("joinStatus");
-
-  joinBtn.addEventListener("click", () => {
-    const raw = joinCode.value.trim();
-    if(!raw){ setStatus(joinStatus, "Type in a code first.", "err"); return; }
-    myName = joinName.value.trim() || "You";
-    const peerId = codeToPeerId(raw);
-
+  function joinRoom(code, name, isResume){
+    myName = name || "You";
+    const peerId = codeToPeerId(code);
     joinBtn.disabled = true;
-    setStatus(joinStatus, "Connecting…");
+    setStatus(joinStatus, isResume ? "Reconnecting…" : "Connecting…");
 
     myPeer = new Peer(undefined, { debug: 0 });
     myPeer.on("open", () => {
       const conn = myPeer.connect(peerId, { reliable: true });
       wireDataConn(conn);
-      conn.on("open", () => enterRoom(raw));
+      conn.on("open", () => {
+        enterRoom(code);
+        setRoomUrl("guest", code);
+        saveSession("guest", code, myName);
+      });
     });
     myPeer.on("error", (err) => {
       if(err.type === "peer-unavailable"){
-        setStatus(joinStatus, "No room is open with that code.", "err");
+        setStatus(joinStatus, isResume ? "The host isn't back yet — try again in a moment." : "No room is open with that code.", "err");
       } else {
         setStatus(joinStatus, "Something went wrong: " + err.type, "err");
       }
@@ -784,13 +1008,58 @@
       mediaConn = call;
       wireMediaConn(call);
     });
+  }
+
+  joinBtn.addEventListener("click", () => {
+    const raw = joinCode.value.trim();
+    if(!raw){ setStatus(joinStatus, "Type in a code first.", "err"); return; }
+    joinRoom(raw, joinName.value.trim(), false);
   });
 
   leaveBtn.addEventListener("click", () => {
     if(confirm("Leave the room?")){
+      clearSession();
+      clearRoomUrl();
       location.reload();
     }
   });
+
+  // ---------- resume on load ----------
+  (function resume(){
+    const params = new URLSearchParams(location.search);
+    const urlRoom = params.get("room");
+    const urlHost = params.get("host") === "1";
+    const session = loadSession();
+
+    if(!urlRoom){
+      return; // plain landing page, nothing to resume
+    }
+
+    // Prefer the session's remembered name; fall back to asking.
+    const rememberedName = session && session.code === urlRoom ? session.name : null;
+
+    if(urlHost){
+      if(rememberedName){
+        startRoom(urlRoom, rememberedName, true);
+      } else {
+        tabStart.click();
+        resumeCode = urlRoom;
+        startName.placeholder = "Enter your name to reopen this room";
+        startCode.textContent = urlRoom;
+        startCodeBlock.classList.remove("hidden");
+        startBtn.innerHTML = '<svg data-lucide="door-open" class="icon"></svg>Reopen room';
+        icons();
+      }
+    } else {
+      joinCode.value = urlRoom;
+      tabJoin.click();
+      if(rememberedName){
+        joinRoom(urlRoom, rememberedName, true);
+      } else {
+        setStatus(joinStatus, "Enter your name to join this room", null, false);
+      }
+    }
+  })();
 
 })();
 </script>
