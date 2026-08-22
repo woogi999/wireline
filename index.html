@@ -8,6 +8,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://unpkg.com/lucide@0.462.0/dist/umd/lucide.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
 <style>
   :root{
     --bg: #ffffff;
@@ -480,7 +482,25 @@
   .lightbox img{max-width:100%; max-height:100%; border-radius:8px; box-shadow:0 10px 40px rgba(0,0,0,0.5);}
 
   .chat-input-row{display:flex; gap:8px;}
-  .chat-input-row input[type=text]{flex:1;}
+  .chat-input-row textarea{flex:1; resize:none; min-height:42px; max-height:180px; font:inherit; line-height:1.45;}
+  .room-password-display{display:flex; align-items:center; gap:8px; margin-top:10px; padding:8px 10px; border:1px solid var(--border); border-radius:9px; background:var(--bg);}
+  .password-label{font-size:12px; color:var(--muted); font-weight:600;}
+  .password-value{flex:1; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .password-value.masked{letter-spacing:.12em;}
+  .members-panel{border:1px solid var(--border); border-radius:10px; padding:9px; background:var(--bg); margin-bottom:10px;}
+  .members-title{font-size:12px; font-weight:700; color:var(--muted); margin-bottom:6px;}
+  .member-row{display:flex; align-items:center; gap:6px; padding:5px 2px; font-size:13px;}
+  .member-name{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .member-role{font-size:10px; color:var(--muted);}
+  .member-action{padding:5px 7px; font-size:11px;}
+  .msg h1,.msg h2,.msg h3,.msg h4,.msg h5,.msg h6{margin:6px 0 4px; line-height:1.2;}
+  .msg h1{font-size:1.45em}.msg h2{font-size:1.3em}.msg h3{font-size:1.15em}.msg h4,.msg h5,.msg h6{font-size:1em}
+  .msg ol{margin:4px 0 4px 22px; padding:0;}
+  .msg table{border-collapse:collapse; width:100%; margin:6px 0; font-size:.92em;}
+  .msg th,.msg td{border:1px solid currentColor; padding:4px 6px; text-align:left;}
+  .msg hr{border:0; border-top:1px solid currentColor; opacity:.35; margin:7px 0;}
+  .msg img{max-width:100%; border-radius:6px;}
+  .msg u{text-decoration:underline;}
 
   .room-header{
     display:flex;
@@ -551,6 +571,11 @@
           <button class="btn" id="copyStartCode" title="Copy code"><svg data-lucide="copy" class="icon"></svg></button>
           <button class="btn" id="copyStartLink" title="Copy shareable link"><svg data-lucide="link-2" class="icon"></svg></button>
         </div>
+        <div class="room-password-display">
+          <span class="password-label">Password</span>
+          <span class="password-value masked" id="startPasswordDisplay">No password</span>
+          <button class="btn icon-only" id="toggleStartPassword" title="Reveal password" aria-label="Reveal password"><svg data-lucide="eye" class="icon"></svg></button>
+        </div>
         <div class="status" id="startStatus"><span class="pulse-dot"></span>Waiting for someone to join</div>
       </div>
     </section>
@@ -589,6 +614,11 @@
           <button class="btn" id="copyRoomLink" title="Copy shareable link"><svg data-lucide="link-2" class="icon"></svg><span class="label-text">Copy link</span></button>
         </div>
 
+        <div class="members-panel" id="membersPanel">
+          <div class="members-title">Members</div>
+          <div id="membersList"></div>
+        </div>
+
         <div class="videos">
           <div class="video-box" id="localBox">
             <video id="localVideo" autoplay playsinline muted></video>
@@ -613,7 +643,7 @@
         <div class="chat-log" id="chatLog"></div>
         <div class="dropzone-overlay hidden" id="dropOverlay"><svg data-lucide="upload" class="icon"></svg>Drop file to send</div>
         <div class="chat-input-row">
-          <input type="text" id="chatInput" placeholder="Write a message">
+          <textarea id="chatInput" rows="1" placeholder="Write a message (Markdown supported)"></textarea>
           <button class="btn primary icon-only" id="chatSendBtn"><svg data-lucide="send" class="icon"></svg></button>
         </div>
       </main>
@@ -639,7 +669,7 @@
   function applyTheme(theme, persist){
     document.documentElement.setAttribute("data-theme", theme);
     if(persist) localStorage.setItem(THEME_KEY, theme);
-    const iconName = theme === "dark" ? "sun" : "moon";
+    const iconName = theme === "dark" ? "moon" : "sun";
     ["themeIcon","themeIconRoom"].forEach(id => {
       const el = document.getElementById(id);
       if(el) setIconRaw(el, iconName);
@@ -720,6 +750,12 @@
   let myName = "You";
   let roomPassword = "";
   let hostClosingRoom = false;
+  let bannedClientIds = new Set();
+  const CLIENT_ID_KEY = "wireline_client_id";
+  function getClientId(){
+    try{ let id=localStorage.getItem(CLIENT_ID_KEY); if(!id){ id=crypto.randomUUID(); localStorage.setItem(CLIENT_ID_KEY,id); } return id; }catch(e){ return "client-" + Math.random().toString(36).slice(2) + Date.now().toString(36); }
+  }
+  const clientId = getClientId();
   const CHUNK_SIZE = 256 * 1024; // Larger SCTP messages reduce per-chunk overhead while staying broadly compatible
   let fileIdCounter = 0;
   let incomingFiles = new Map(); // `${peerId}:${fileId}` -> {name,size,mime,chunks,received,senderName,refs}
@@ -789,7 +825,7 @@
   function getOrCreatePeer(id, name){
     let p = peers.get(id);
     if(!p){
-      p = { id, name: name || "Them", dataConn: null, mediaConn: null, dataConnToken: 0, mediaConnToken: 0, isHostConnection: false, authenticated: false };
+      p = { id, name: name || "Them", dataConn: null, mediaConn: null, dataConnToken: 0, mediaConnToken: 0, isHostConnection: false, authenticated: false, clientId: "" };
       peers.set(id, p);
       createPeerTile(p);
     } else if(name && p.name !== name){
@@ -798,6 +834,38 @@
       icons();
     }
     return p;
+  }
+
+  function renderMembers(){
+    const list = document.getElementById("membersList");
+    if(!list) return;
+    list.innerHTML = "";
+    const self = document.createElement("div");
+    self.className = "member-row";
+    self.innerHTML = `<span class="member-name">${escapeHtml(myName)}</span><span class="member-role">${isHost ? "Host" : "You"}</span>`;
+    list.appendChild(self);
+    peers.forEach(p => {
+      if(!p.authenticated) return;
+      const row=document.createElement("div"); row.className="member-row";
+      const name=document.createElement("span"); name.className="member-name"; name.textContent=p.name || "Guest";
+      row.appendChild(name);
+      if(isHost){
+        const kick=document.createElement("button"); kick.className="btn danger member-action"; kick.textContent="Kick"; kick.onclick=()=>moderatePeer(p.id,false); row.appendChild(kick);
+        const ban=document.createElement("button"); ban.className="btn danger member-action"; ban.textContent="Ban"; ban.onclick=()=>moderatePeer(p.id,true); row.appendChild(ban);
+      }
+      list.appendChild(row);
+    });
+  }
+
+  function moderatePeer(id, ban){
+    if(!isHost) return;
+    const p=peers.get(id); if(!p || !p.authenticated) return;
+    if(!confirm(`${ban ? "Ban" : "Kick"} ${p.name || "this member"}?`)) return;
+    if(ban && p.clientId){ bannedClientIds.add(p.clientId); saveSession("host", roomCodeTag.textContent, myName, roomPassword); }
+    try{ p.dataConn?.send({type: ban ? "banned" : "kick"}); }catch(e){}
+    setTimeout(()=>removePeer(id, false), 30);
+    addMsg(`${p.name || "Member"} was ${ban ? "banned" : "kicked"}`, "system");
+    renderMembers();
   }
 
   // Fully tears down a peer's tile, video stream, and call when they leave —
@@ -815,6 +883,7 @@
 
     if(announce && p.name && p.name !== "Them") addMsg(`${p.name} left`, "system");
     updateConnectionStatus();
+    renderMembers();
   }
 
 
@@ -833,46 +902,14 @@
     if(localStream && localStream.getVideoTracks().length) openVideoModal(localStream, myName);
   });
 
-  // Lightweight, safe Markdown renderer. We escape HTML first, then apply a
-  // deliberately small Markdown subset so messages can never inject HTML/JS.
+  // Full GitHub-Flavored Markdown renderer. marked handles headings, emphasis,
+  // lists, tables, task lists, blockquotes, code blocks, links, etc. DOMPurify
+  // removes unsafe HTML after parsing. ++text++ is Wireline's underline shortcut.
   function renderMarkdown(source){
-    // Lightweight Markdown renderer: escape first, then allow only the
-    // formatting tags we explicitly generate. This keeps chat HTML-safe.
-    let s = escapeHtml(String(source ?? ""));
-
-    // Fenced code blocks first so their contents are not reformatted.
-    const codeBlocks = [];
-    s = s.replace(/```(?:[a-zA-Z0-9_-]+)?\n?([\s\S]*?)```/g, (_, code) => {
-      const token = `\u0000CODE${codeBlocks.length}\u0000`;
-      codeBlocks.push(`<pre><code>${code}</code></pre>`);
-      return token;
-    });
-
-    // Inline code.
-    s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
-
-    // Markdown links. The URL was already HTML-escaped. Only http(s) links
-    // are generated, preventing javascript: URLs.
-    s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-
-    s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-    s = s.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
-    s = s.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
-    s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
-    s = s.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>');
-
-    // Automatic links.
-    s = s.replace(/(^|[\s(])(https?:\/\/[^\s<]+)(?=$|[\s).,!?:;])/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>');
-
-    // Blockquotes and lists, line by line.
-    s = s.replace(/^> ?(.*)$/gm, '<blockquote>$1</blockquote>');
-    s = s.replace(/^[-*] +(.*)$/gm, '<li>$1</li>');
-    s = s.replace(/^\d+\. +(.*)$/gm, '<li>$1</li>');
-    s = s.replace(/(?:<li>.*<\/li>(?:\n|$))+/g, m => `<ul>${m}</ul>`);
-
-    s = s.replace(/\n/g, '<br>');
-    s = s.replace(/\u0000CODE(\d+)\u0000/g, (_, i) => codeBlocks[Number(i)]);
-    return s;
+    let text = String(source ?? "");
+    text = text.replace(/\+\+([^+\n]+)\+\+/g, '<u>$1</u>');
+    let html = marked.parse(text, { gfm:true, breaks:true, headerIds:false, mangle:false });
+    return DOMPurify.sanitize(html, { USE_PROFILES:{html:true} });
   }
 
   // Messenger-style grouping: only the first consecutive incoming message
@@ -1032,7 +1069,7 @@
         return;
       }
       conn._wirelineConnecting = false;
-      conn.send({ type: "hello", name: myName, password: roomPassword });
+      conn.send({ type: "hello", name: myName, password: roomPassword, clientId });
       updateConnectionStatus();
     });
 
@@ -1060,11 +1097,17 @@
     if(!p) return;
     if(msg.type === "hello"){
       if(isHost){
+        if(msg.clientId && bannedClientIds.has(String(msg.clientId))){
+          try{ p.dataConn?.send({ type: "banned" }); }catch(e){}
+          setTimeout(() => { try{ p.dataConn?.close(); }catch(e){} }, 20);
+          return;
+        }
         if(String(msg.password || "") !== roomPassword){
           try{ p.dataConn?.send({ type: "auth-fail" }); }catch(e){}
           setTimeout(() => { try{ p.dataConn?.close(); }catch(e){} }, 20);
           return;
         }
+        p.clientId = String(msg.clientId || "");
         p.authenticated = true;
         p.name = msg.name || "Them";
         if(p.labelEl) p.labelEl.innerHTML = '<svg data-lucide="user"></svg>' + escapeHtml(p.name);
@@ -1075,6 +1118,7 @@
           .map(other => ({ id: other.id, name: other.name }));
         try{ p.dataConn?.send({ type: "roster", peers: roster }); }catch(e){}
         addMsg(`${p.name} joined`, "system");
+        renderMembers();
       } else {
         p.name = msg.name || "Host";
         p.authenticated = true;
@@ -1088,6 +1132,14 @@
       enterRoom(roomCodeTag.textContent);
       setRoomUrl("guest", roomCodeTag.textContent);
       try{ p.dataConn?.send({ type: "history-request" }); }catch(e){}
+    } else if(msg.type === "banned"){
+      setStatus(joinStatus, "You are banned from this room.", "err");
+      try{ myPeer?.destroy(); }catch(e){}
+      clearSession(); clearRoomUrl(); roomView.classList.remove("open"); landing.style.display = ""; tabJoin.click(); joinBtn.disabled = false; return;
+    } else if(msg.type === "kick"){
+      setStatus(joinStatus, "You were kicked from this room.", "err");
+      try{ myPeer?.destroy(); }catch(e){}
+      clearSession(); clearRoomUrl(); roomView.classList.remove("open"); landing.style.display = ""; tabJoin.click(); joinBtn.disabled = false; return;
     } else if(msg.type === "auth-fail"){
       setStatus(joinStatus, "Incorrect room password.", "err");
       try{ myPeer?.destroy(); }catch(e){}
@@ -1147,7 +1199,23 @@
   }
 
   chatSendBtn.addEventListener("click", sendChat);
-  chatInput.addEventListener("keydown", (e) => { if(e.key === "Enter") sendChat(); });
+  function wrapSelection(before, after=before){
+    const el=chatInput; const start=el.selectionStart, end=el.selectionEnd; const value=el.value; const selected=value.slice(start,end);
+    el.setRangeText(before + (selected || "text") + after, start, end, "select");
+    el.focus();
+  }
+  chatInput.addEventListener("keydown", (e) => {
+    if((e.ctrlKey || e.metaKey) && !e.altKey){
+      const k=e.key.toLowerCase();
+      if(k === "b"){ e.preventDefault(); wrapSelection("**"); return; }
+      if(k === "i"){ e.preventDefault(); wrapSelection("*"); return; }
+      if(k === "u"){ e.preventDefault(); wrapSelection("++"); return; }
+      if(k === "x" && e.shiftKey){ e.preventDefault(); wrapSelection("~~"); return; }
+      if(k === "k"){ e.preventDefault(); const el=chatInput; const st=el.selectionStart,en=el.selectionEnd,val=el.value,sel=val.slice(st,en)||"text"; el.setRangeText(`[${sel}](https://example.com)`,st,en,"select"); return; }
+    }
+    if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); sendChat(); }
+  });
+  chatInput.addEventListener("input", () => { chatInput.style.height="auto"; chatInput.style.height=Math.min(chatInput.scrollHeight,180)+"px"; });
   function sendChat(){
     const text = chatInput.value.trim();
     if(!text) return;
@@ -1642,7 +1710,7 @@
 
 
   function saveSession(role, code, name, password){
-    try{ sessionStorage.setItem(SESSION_KEY, JSON.stringify({ role, code, name, password: password || "" })); }catch(e){}
+    try{ sessionStorage.setItem(SESSION_KEY, JSON.stringify({ role, code, name, password: password || "", bannedClientIds: [...bannedClientIds] })); }catch(e){}
   }
   function clearSession(){
     try{ sessionStorage.removeItem(SESSION_KEY); }catch(e){}
@@ -1679,6 +1747,8 @@
   const copyStartCode = document.getElementById("copyStartCode");
   const copyStartLink = document.getElementById("copyStartLink");
   const startStatus = document.getElementById("startStatus");
+  const startPasswordDisplay = document.getElementById("startPasswordDisplay");
+  const toggleStartPassword = document.getElementById("toggleStartPassword");
   const joinName = document.getElementById("joinName");
   const joinCode = document.getElementById("joinCode");
   const joinPassword = document.getElementById("joinPassword");
@@ -1776,6 +1846,7 @@
   function startRoom(code, name, isResume, password){
     myName = name || loadName() || "You";
     roomPassword = password || "";
+    if(startPasswordDisplay){ startPasswordDisplay.dataset.password = roomPassword; startPasswordDisplay.textContent = roomPassword ? "••••••••" : "No password"; startPasswordDisplay.classList.toggle("masked", !!roomPassword); }
     saveName(myName);
     isHost = true;
     const peerId = codeToPeerId(code);
@@ -1829,6 +1900,15 @@
     } else {
       startRoom(genCode(), startName.value.trim(), false, startPassword.value);
     }
+  });
+
+  toggleStartPassword.addEventListener("click", () => {
+    if(!startPasswordDisplay) return;
+    const hidden = startPasswordDisplay.classList.contains("masked");
+    startPasswordDisplay.textContent = hidden ? (startPasswordDisplay.dataset.password || "No password") : (startPasswordDisplay.dataset.password ? "••••••••" : "No password");
+    startPasswordDisplay.classList.toggle("masked", hidden);
+    toggleStartPassword.setAttribute("title", hidden ? "Hide password" : "Reveal password");
+    setIcon(toggleStartPassword.querySelector("svg"), hidden ? "eye-off" : "eye");
   });
 
   copyStartCode.addEventListener("click", () => {
@@ -1931,6 +2011,7 @@
     }
 
     // Prefer the session's remembered name; fall back to asking.
+    if(session && session.code === urlRoom && Array.isArray(session.bannedClientIds)) bannedClientIds = new Set(session.bannedClientIds);
     const rememberedName = session && session.code === urlRoom ? session.name : null;
     const rememberedPassword = session && session.code === urlRoom ? (session.password || "") : "";
 
