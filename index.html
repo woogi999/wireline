@@ -282,7 +282,7 @@
 
   .videos{display:flex; flex-wrap:wrap; gap:8px; min-width:0;}
   .videos > .video-box{flex:1 1 220px; min-width:180px; max-width:420px;}
-  .floating-video{position:fixed !important; z-index:1000 !important; width:220px; height:145px; right:24px; top:24px; bottom:auto; aspect-ratio:auto !important; box-shadow:0 10px 30px rgba(0,0,0,.22); cursor:grab; user-select:none;}
+  .floating-video{position:fixed !important; z-index:1000 !important; width:220px !important; height:145px !important; min-width:220px !important; max-width:220px !important; min-height:145px !important; max-height:145px !important; flex:0 0 220px !important; right:24px; top:24px; bottom:auto; aspect-ratio:auto !important; box-sizing:border-box; overflow:hidden; box-shadow:0 10px 30px rgba(0,0,0,.22); cursor:grab; user-select:none;}
   #stageLocalSlot > .video-box{width:220px; height:145px; min-width:220px; max-width:220px; flex:0 0 220px; aspect-ratio:auto;}
   .floating-video:active{cursor:grabbing;}
   .floating-video .local-media-stack{position:absolute;inset:0;display:flex;gap:2px;background:#000;}
@@ -567,7 +567,7 @@
     }
     .media-grid{flex-direction:column;}
     .media-grid .video-box{width:100%; max-width:none;}
-    .floating-video{width:180px;height:120px;right:12px;top:12px;bottom:auto;}
+    .floating-video{width:180px !important;height:120px !important;min-width:180px !important;max-width:180px !important;min-height:120px !important;max-height:120px !important;flex:0 0 180px !important;right:12px;top:12px;bottom:auto;}
     #stageLocalSlot > .video-box{width:180px;height:120px;min-width:180px;max-width:180px;flex-basis:180px;}
     .call-controls{flex-direction:row; flex-wrap:wrap; flex:1 1 100%;}
     .call-controls .btn{width:auto; flex:1;}
