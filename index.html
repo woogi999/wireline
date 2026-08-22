@@ -6,6 +6,7 @@
 <title>Wireline — talk and share</title>
 <meta name="description" content="Chat, call, and share your screen straight from your browser. No upload, no account.">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://unpkg.com/lucide@0.462.0/dist/umd/lucide.js"></script>
 <style>
   :root{
@@ -21,10 +22,47 @@
     --bubble-me: #2563eb;
     --bubble-me-text: #ffffff;
     --bubble-them: #eef0f3;
+    --video-bg: #111318;
     --radius: 14px;
     --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
     --ease: cubic-bezier(.2,.8,.2,1);
+    color-scheme: light;
   }
+  html[data-theme="dark"]{
+    --bg: #16161a;
+    --panel: #1e1e23;
+    --border: #303038;
+    --text: #f0f0f2;
+    --muted: #8f8f9a;
+    --accent: #5b8dff;
+    --accent-soft: #202a44;
+    --ok: #3ecb7e;
+    --err: #ff6b5c;
+    --bubble-me: #5b8dff;
+    --bubble-me-text: #0e0e11;
+    --bubble-them: #2a2a32;
+    --video-bg: #0a0a0c;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: dark){
+    html:not([data-theme="light"]):not([data-theme="dark"]){
+      --bg: #16161a;
+      --panel: #1e1e23;
+      --border: #303038;
+      --text: #f0f0f2;
+      --muted: #8f8f9a;
+      --accent: #5b8dff;
+      --accent-soft: #202a44;
+      --ok: #3ecb7e;
+      --err: #ff6b5c;
+      --bubble-me: #5b8dff;
+      --bubble-me-text: #0e0e11;
+      --bubble-them: #2a2a32;
+      --video-bg: #0a0a0c;
+      color-scheme: dark;
+    }
+  }
+  body{transition:background-color .2s var(--ease), color .2s var(--ease);}
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;}
   body{
@@ -47,6 +85,7 @@
   }
   @keyframes fadeIn{ from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:translateY(0);} }
 
+  .header-row{display:flex; align-items:flex-start; justify-content:space-between; gap:12px;}
   h1{
     font-size:23px;
     font-weight:700;
@@ -265,7 +304,7 @@
   }
   .video-box{
     position:relative;
-    background:#111318;
+    background:var(--video-bg);
     border-radius:var(--radius);
     overflow:hidden;
     aspect-ratio:4/3;
@@ -460,7 +499,10 @@
 <div class="wrap">
 
   <div id="landing">
-    <h1><svg data-lucide="radio"></svg>Wireline</h1>
+    <div class="header-row">
+      <h1><svg data-lucide="radio"></svg>Wireline</h1>
+      <button class="btn icon-only" id="themeToggle" title="Toggle dark mode"><svg data-lucide="moon" class="icon" id="themeIcon"></svg></button>
+    </div>
     <p class="lead">Open a room, share the code, and talk. Chat, camera, mic, and screen share, straight between two browsers.</p>
 
     <div class="tabs" role="tablist">
@@ -507,7 +549,10 @@
       <aside class="sidebar">
         <div class="room-header">
           <div class="code-tag"><svg data-lucide="hash"></svg><span id="roomCodeTag"></span></div>
-          <button class="btn danger" id="leaveBtn" title="Leave"><svg data-lucide="log-out" class="icon"></svg></button>
+          <div style="display:flex; gap:6px;">
+            <button class="btn icon-only" id="themeToggleRoom" title="Toggle dark mode"><svg data-lucide="moon" class="icon" id="themeIconRoom"></svg></button>
+            <button class="btn danger icon-only" id="leaveBtn" title="Leave"><svg data-lucide="log-out" class="icon"></svg></button>
+          </div>
         </div>
 
         <div class="videos">
@@ -527,7 +572,7 @@
           <button class="btn" id="camBtn" title="Toggle camera"><svg data-lucide="video-off" class="icon" id="camIcon"></svg><span class="label-text">Camera</span></button>
           <button class="btn" id="screenBtn" title="Share your screen"><svg data-lucide="monitor-up" class="icon" id="screenIcon"></svg><span class="label-text">Share screen</span></button>
           <button class="btn" id="fileBtn" title="Send a file"><svg data-lucide="paperclip" class="icon"></svg><span class="label-text">Send file</span></button>
-          <input type="file" id="fileInput" class="hidden">
+          <input type="file" id="fileInput" class="hidden" multiple>
         </div>
         <div class="status" id="callStatus"></div>
         <div class="progress-track hidden" id="fileProgressTrack"><div class="progress-fill" id="fileProgressFill"></div></div>
@@ -552,6 +597,36 @@
 
   function icons(){ try{ if(window.lucide && lucide.createIcons) lucide.createIcons(); }catch(e){ console.warn("icon render failed", e); } }
   icons();
+
+  // ---------- theme (dark mode) ----------
+  const THEME_KEY = "wireline_theme";
+  function currentTheme(){
+    const saved = localStorage.getItem(THEME_KEY);
+    if(saved === "light" || saved === "dark") return saved;
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  function applyTheme(theme, persist){
+    document.documentElement.setAttribute("data-theme", theme);
+    if(persist) localStorage.setItem(THEME_KEY, theme);
+    const iconName = theme === "dark" ? "sun" : "moon";
+    ["themeIcon","themeIconRoom"].forEach(id => {
+      const el = document.getElementById(id);
+      if(el) setIconRaw(el, iconName);
+    });
+  }
+  function setIconRaw(el, name){ el.setAttribute("data-lucide", name); icons(); }
+  applyTheme(currentTheme(), false);
+  function toggleTheme(){
+    const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    applyTheme(next, true);
+  }
+  document.getElementById("themeToggle").addEventListener("click", toggleTheme);
+  document.getElementById("themeToggleRoom").addEventListener("click", toggleTheme);
+  if(window.matchMedia){
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
+      if(!localStorage.getItem(THEME_KEY)) applyTheme(e.matches ? "dark" : "light", false);
+    });
+  }
 
   const WORDS = ["amber","fox","quartz","delta","harbor","ember","north","cinder","willow","zephyr","onyx","raven","cobalt","juniper","tundra","ash","vapor","granite","lumen","echo"];
   function genCode(){
@@ -774,7 +849,7 @@
   fileBtn.addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", (e) => {
     if(e.target.files.length){
-      Array.from(e.target.files).forEach(f => sendFileOverData(f));
+      handleFiles(Array.from(e.target.files));
     }
     fileInput.value = "";
   });
@@ -809,8 +884,56 @@
     dragDepth = 0;
     dropOverlay.classList.add("hidden");
     const files = Array.from(e.dataTransfer.files || []);
-    files.forEach(f => sendFileOverData(f));
+    handleFiles(files);
   });
+
+  // ---------- batching: multi-file sends, auto-zip for non-media files ----------
+  function handleFiles(files){
+    if(!files || !files.length) return;
+
+    if(files.length === 1){
+      sendFileOverData(files[0]);
+      return;
+    }
+
+    const mediaFiles = files.filter(f => isImage(f.type, f.name) || isVideo(f.type, f.name));
+    const otherFiles = files.filter(f => !(isImage(f.type, f.name) || isVideo(f.type, f.name)));
+
+    // Images and videos keep their individual previews, so send those as-is.
+    mediaFiles.forEach(f => sendFileOverData(f));
+
+    if(otherFiles.length === 1){
+      sendFileOverData(otherFiles[0]);
+    } else if(otherFiles.length > 1){
+      zipFiles(otherFiles).then(zipFile => sendFileOverData(zipFile)).catch(() => {
+        setStatus(callStatus, "Couldn't zip those files — sending separately.", "err");
+        otherFiles.forEach(f => sendFileOverData(f));
+      });
+    }
+  }
+
+  function zipFiles(files){
+    if(!window.JSZip){
+      return Promise.reject(new Error("JSZip not available"));
+    }
+    const zip = new JSZip();
+    const usedNames = new Set();
+    files.forEach(f => {
+      let name = f.name || "file";
+      let i = 1;
+      while(usedNames.has(name)){
+        const dot = f.name.lastIndexOf(".");
+        name = dot > -1 ? `${f.name.slice(0,dot)} (${i})${f.name.slice(dot)}` : `${f.name} (${i})`;
+        i++;
+      }
+      usedNames.add(name);
+      zip.file(name, f);
+    });
+    return zip.generateAsync({ type: "blob", compression: "DEFLATE" }).then(blob => {
+      const stamp = new Date().toISOString().replace(/[:.]/g,"-").slice(0,19);
+      return new File([blob], `files-${stamp}.zip`, { type: "application/zip" });
+    });
+  }
 
   function sendFileOverData(file){
     if(!dataConn || !dataConn.open){ setStatus(callStatus, "Not connected yet.", "err"); return; }
@@ -857,13 +980,22 @@
     return localStream;
   }
 
-  async function callPeerIfPossible(){
-    if(!myPeer) return;
-    const targetId = codeToPeerId(roomCodeTag.textContent);
-    if(mediaConn) return;
-    if(!localStream || localStream.getTracks().length === 0) return;
-    mediaConn = myPeer.call(targetId, localStream);
-    wireMediaConn(mediaConn);
+  // PeerJS's MediaConnection doesn't renegotiate an already-open call when
+  // tracks are added/removed later, so a sender added after the fact never
+  // actually reaches the other side. The reliable fix is to place a fresh
+  // call every time the local track set changes; the receiving end's
+  // "call" handler (see startRoom/joinRoom) replaces the old mediaConn.
+  function refreshCall(){
+    if(!myPeer || !roomCodeTag.textContent) return;
+    if(mediaConn){
+      try{ mediaConn.close(); }catch(e){}
+      mediaConn = null;
+    }
+    if(localStream && localStream.getTracks().length > 0){
+      const targetId = codeToPeerId(roomCodeTag.textContent);
+      mediaConn = myPeer.call(targetId, localStream);
+      wireMediaConn(mediaConn);
+    }
   }
 
   function wireMediaConn(conn){
@@ -897,8 +1029,7 @@
         micOn = true;
         micBtn.classList.add("active-toggle");
         setIcon(document.getElementById("micIcon"), "mic");
-        maybeUpdateOutgoingCall();
-        if(!mediaConn) callPeerIfPossible();
+        refreshCall();
       }catch(e){
         setStatus(callStatus, "Couldn't access your microphone.", "err");
       }
@@ -907,7 +1038,7 @@
       micOn = false;
       micBtn.classList.remove("active-toggle");
       setIcon(document.getElementById("micIcon"), "mic-off");
-      maybeUpdateOutgoingCall();
+      refreshCall();
     }
   });
 
@@ -921,8 +1052,7 @@
         camOn = true;
         camBtn.classList.add("active-toggle");
         setIcon(document.getElementById("camIcon"), "video");
-        maybeUpdateOutgoingCall();
-        if(!mediaConn) callPeerIfPossible();
+        refreshCall();
       }catch(e){
         setStatus(callStatus, "Couldn't access your camera.", "err");
       }
@@ -931,7 +1061,7 @@
       camOn = false;
       camBtn.classList.remove("active-toggle");
       setIcon(document.getElementById("camIcon"), "video-off");
-      maybeUpdateOutgoingCall();
+      refreshCall();
     }
   });
 
@@ -947,8 +1077,7 @@
         sharingScreen = true;
         screenBtn.classList.add("active-toggle");
         setIcon(document.getElementById("screenIcon"), "monitor-x");
-        maybeUpdateOutgoingCall();
-        if(!mediaConn) callPeerIfPossible();
+        refreshCall();
         track.addEventListener("ended", stopScreenShare);
       }catch(e){
         // user cancelled the picker
@@ -972,28 +1101,7 @@
     camOn = false;
     camBtn.classList.remove("active-toggle");
     setIcon(document.getElementById("camIcon"), "video-off");
-    maybeUpdateOutgoingCall();
-  }
-
-  function maybeUpdateOutgoingCall(){
-    if(!mediaConn || !mediaConn.peerConnection) return;
-    const pc = mediaConn.peerConnection;
-    const senders = pc.getSenders();
-    localStream.getTracks().forEach(track => {
-      const sender = senders.find(s => s.track && s.track.kind === track.kind);
-      if(sender){
-        sender.replaceTrack(track);
-      } else {
-        // No sender exists for this kind yet (e.g. the call was answered
-        // before this track existed) — add it so it actually gets sent.
-        try{ pc.addTrack(track, localStream); }catch(e){}
-      }
-    });
-    senders.forEach(sender => {
-      if(sender.track && !localStream.getTracks().some(t => t.kind === sender.track.kind && t.readyState === "live")){
-        try{ sender.replaceTrack(null); }catch(e){}
-      }
-    });
+    refreshCall();
   }
 
   // ---------- URL + session persistence ----------
@@ -1093,6 +1201,7 @@
     });
     myPeer.on("call", async (call) => {
       await ensureLocalStream();
+      if(mediaConn){ try{ mediaConn.close(); }catch(e){} }
       call.answer(localStream);
       mediaConn = call;
       wireMediaConn(call);
@@ -1141,6 +1250,7 @@
     });
     myPeer.on("call", async (call) => {
       await ensureLocalStream();
+      if(mediaConn){ try{ mediaConn.close(); }catch(e){} }
       call.answer(localStream);
       mediaConn = call;
       wireMediaConn(call);
