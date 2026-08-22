@@ -298,6 +298,15 @@
   .video-box .remote-media-stack.single video{flex-basis:100%;}
   .video-box .remote-media-stack.screen-only video{flex-basis:100%;}
   .video-box .remote-media-stack .remote-screen{background:#080808;}
+  .media-item{position:relative;flex:1 1 50%;min-width:0;height:100%;overflow:hidden;background:#000;}
+  .media-item video{width:100%;height:100%;object-fit:contain;display:block;background:#000;}
+  .video-box .remote-media-stack .media-item video{flex:none;}
+  .video-box .remote-media-stack.single .media-item{flex-basis:100%;}
+  .video-box .remote-media-stack.screen-only .remote-camera-item{display:none;}
+  .media-fullscreen{position:absolute;top:8px;right:8px;width:30px;height:30px;border:0;border-radius:7px;background:rgba(0,0,0,.62);color:#fff;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;cursor:pointer;transition:opacity .15s,background .15s;z-index:5;}
+  .media-item:hover .media-fullscreen,.media-fullscreen:focus-visible{opacity:1;pointer-events:auto;}
+  .media-fullscreen:hover{background:rgba(0,0,0,.82);}
+  .media-fullscreen svg{width:16px;height:16px;}
   .video-box .remote-placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#71717a;}
   .floating-grip{position:absolute; top:6px; left:50%; transform:translateX(-50%); padding:1px 8px; border-radius:10px; background:rgba(0,0,0,.35); color:#fff; opacity:.75; pointer-events:none;}
   .floating-grip svg{width:15px;height:15px;}
@@ -646,8 +655,14 @@
 
         <div class="floating-video video-box" id="localBox" title="Click to expand • Drag to float">
           <div class="local-media-stack">
-            <video id="localVideo" autoplay playsinline muted></video>
-            <video id="localScreenVideo" class="local-screen-video hidden" autoplay playsinline muted></video>
+            <div class="media-item local-camera-item">
+              <video id="localVideo" autoplay playsinline muted></video>
+              <button class="media-fullscreen" id="localCameraFullscreen" type="button" title="Fullscreen camera" aria-label="Fullscreen camera"><svg data-lucide="maximize-2"></svg></button>
+            </div>
+            <div class="media-item local-screen-item">
+              <video id="localScreenVideo" class="local-screen-video hidden" autoplay playsinline muted></video>
+              <button class="media-fullscreen" id="localScreenFullscreen" type="button" title="Fullscreen screen share" aria-label="Fullscreen screen share"><svg data-lucide="maximize-2"></svg></button>
+            </div>
             <video id="spotlightVideo" class="spotlight-video hidden" autoplay playsinline muted></video>
           </div>
           <div class="label" id="localLabel"><svg data-lucide="user"></svg>You</div>
@@ -860,14 +875,30 @@
   }
 
   // ---------- video tile for each connected peer ----------
+  function openMediaFullscreen(video, name){
+    if(!video || !video.srcObject) return;
+    // Prefer the browser fullscreen API so controls/other page content disappear.
+    if(video.requestFullscreen){
+      video.requestFullscreen().catch(() => openVideoModal(video.srcObject, name));
+    } else {
+      openVideoModal(video.srcObject, name);
+    }
+  }
+
   function createPeerTile(p){
     const box = document.createElement("div");
     box.className = "video-box empty";
     box.dataset.peer = p.id;
     box.innerHTML = `
       <div class="remote-media-stack single">
-        <video autoplay playsinline class="remote-camera hidden"></video>
-        <video autoplay playsinline class="remote-screen hidden"></video>
+        <div class="media-item remote-camera-item">
+          <video autoplay playsinline class="remote-camera hidden"></video>
+          <button class="media-fullscreen" type="button" title="Fullscreen camera" aria-label="Fullscreen camera"><svg data-lucide="maximize-2"></svg></button>
+        </div>
+        <div class="media-item remote-screen-item">
+          <video autoplay playsinline class="remote-screen hidden"></video>
+          <button class="media-fullscreen" type="button" title="Fullscreen screen share" aria-label="Fullscreen screen share"><svg data-lucide="maximize-2"></svg></button>
+        </div>
       </div>
       <div class="placeholder"><svg data-lucide="video-off"></svg></div>
       <div class="label"><svg data-lucide="user"></svg>${escapeHtml(p.name)}</div>
@@ -878,6 +909,14 @@
     p.screenEl = box.querySelector(".remote-screen");
     p.placeholderEl = box.querySelector(".placeholder");
     p.labelEl = box.querySelector(".label");
+    box.querySelector(".remote-camera-item .media-fullscreen")?.addEventListener("click", e => {
+      e.stopPropagation();
+      openMediaFullscreen(p.videoEl, `${p.name || "Guest"} — Camera`);
+    });
+    box.querySelector(".remote-screen-item .media-fullscreen")?.addEventListener("click", e => {
+      e.stopPropagation();
+      openMediaFullscreen(p.screenEl, `${p.name || "Guest"} — Screen share`);
+    });
     icons();
   }
 
@@ -1059,6 +1098,14 @@
   const mediaGrid = document.getElementById("mediaGrid");
   const stageLocalSlot = document.getElementById("stageLocalSlot");
   const collapseMedia = document.getElementById("collapseMedia");
+  document.getElementById("localCameraFullscreen")?.addEventListener("click", e => {
+    e.stopPropagation();
+    openMediaFullscreen(localVideo, `${myName} — Camera`);
+  });
+  document.getElementById("localScreenFullscreen")?.addEventListener("click", e => {
+    e.stopPropagation();
+    openMediaFullscreen(document.getElementById("localScreenVideo"), `${myName} — Screen share`);
+  });
   let mediaExpanded = false;
   let draggingLocal = false, dragMoved = false, dragDX = 0, dragDY = 0;
 
