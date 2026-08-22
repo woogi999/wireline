@@ -304,7 +304,10 @@
   .video-box .remote-media-stack.single .media-item{flex-basis:100%;}
   .video-box .remote-media-stack.screen-only .remote-camera-item{display:none;}
   .media-fullscreen{position:absolute;top:8px;right:8px;width:30px;height:30px;border:0;border-radius:7px;background:rgba(0,0,0,.62);color:#fff;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;cursor:pointer;transition:opacity .15s,background .15s;z-index:5;}
-  .media-item:hover .media-fullscreen,.media-fullscreen:focus-visible{opacity:1;pointer-events:auto;}
+  .media-item:hover .media-fullscreen,
+  .media-item:focus-within .media-fullscreen,
+  .media-fullscreen:focus-visible{opacity:1;pointer-events:auto;}
+  .media-item:has(video.hidden) .media-fullscreen{opacity:0 !important;pointer-events:none !important;}
   .media-fullscreen:hover{background:rgba(0,0,0,.82);}
   .media-fullscreen svg{width:16px;height:16px;}
   .video-box .remote-placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#71717a;}
@@ -877,11 +880,19 @@
   // ---------- video tile for each connected peer ----------
   function openMediaFullscreen(video, name){
     if(!video || !video.srcObject) return;
-    // Prefer the browser fullscreen API so controls/other page content disappear.
-    if(video.requestFullscreen){
-      video.requestFullscreen().catch(() => openVideoModal(video.srcObject, name));
-    } else {
-      openVideoModal(video.srcObject, name);
+    // Fullscreen the individual media item, not the whole camera/share tile.
+    // This keeps camera + screen share independently fullscreenable.
+    const target = video.closest(".media-item") || video;
+    const fallback = () => openVideoModal(video.srcObject, name);
+    try{
+      if(target.requestFullscreen){
+        const result = target.requestFullscreen();
+        if(result && typeof result.catch === "function") result.catch(fallback);
+      } else {
+        fallback();
+      }
+    }catch(e){
+      fallback();
     }
   }
 
@@ -909,14 +920,31 @@
     p.screenEl = box.querySelector(".remote-screen");
     p.placeholderEl = box.querySelector(".placeholder");
     p.labelEl = box.querySelector(".label");
-    box.querySelector(".remote-camera-item .media-fullscreen")?.addEventListener("click", e => {
-      e.stopPropagation();
-      openMediaFullscreen(p.videoEl, `${p.name || "Guest"} — Camera`);
-    });
-    box.querySelector(".remote-screen-item .media-fullscreen")?.addEventListener("click", e => {
-      e.stopPropagation();
-      openMediaFullscreen(p.screenEl, `${p.name || "Guest"} — Screen share`);
-    });
+    const wireRemoteFullscreen = (button, video, name) => {
+      if(!button) return;
+      const stop = e => {
+        e.stopPropagation();
+        if(e.cancelable) e.preventDefault();
+      };
+      button.addEventListener("pointerdown", stop);
+      button.addEventListener("pointerup", stop);
+      button.addEventListener("mousedown", stop);
+      button.addEventListener("mouseup", stop);
+      button.addEventListener("click", e => {
+        stop(e);
+        openMediaFullscreen(video, name);
+      });
+    };
+    wireRemoteFullscreen(
+      box.querySelector(".remote-camera-item .media-fullscreen"),
+      p.videoEl,
+      `${p.name || "Guest"} — Camera`
+    );
+    wireRemoteFullscreen(
+      box.querySelector(".remote-screen-item .media-fullscreen"),
+      p.screenEl,
+      `${p.name || "Guest"} — Screen share`
+    );
     icons();
   }
 
@@ -1098,14 +1126,32 @@
   const mediaGrid = document.getElementById("mediaGrid");
   const stageLocalSlot = document.getElementById("stageLocalSlot");
   const collapseMedia = document.getElementById("collapseMedia");
-  document.getElementById("localCameraFullscreen")?.addEventListener("click", e => {
-    e.stopPropagation();
-    openMediaFullscreen(localVideo, `${myName} — Camera`);
-  });
-  document.getElementById("localScreenFullscreen")?.addEventListener("click", e => {
-    e.stopPropagation();
-    openMediaFullscreen(document.getElementById("localScreenVideo"), `${myName} — Screen share`);
-  });
+  function wireFullscreenButton(button, video, name){
+    if(!button) return;
+    const stop = e => {
+      e.stopPropagation();
+      // Do not let the floating-camera drag/click handlers see this gesture.
+      if(e.cancelable) e.preventDefault();
+    };
+    button.addEventListener("pointerdown", stop);
+    button.addEventListener("pointerup", stop);
+    button.addEventListener("mousedown", stop);
+    button.addEventListener("mouseup", stop);
+    button.addEventListener("click", e => {
+      stop(e);
+      openMediaFullscreen(video, name);
+    });
+  }
+  wireFullscreenButton(
+    document.getElementById("localCameraFullscreen"),
+    localVideo,
+    `${myName} — Camera`
+  );
+  wireFullscreenButton(
+    document.getElementById("localScreenFullscreen"),
+    document.getElementById("localScreenVideo"),
+    `${myName} — Screen share`
+  );
   let mediaExpanded = false;
   let draggingLocal = false, dragMoved = false, dragDX = 0, dragDY = 0;
 
