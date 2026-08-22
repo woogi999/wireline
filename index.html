@@ -822,7 +822,10 @@
   function buildMsgWrap(kind, senderName){
     const wrap = document.createElement("div");
     wrap.className = "msg-wrap " + kind;
-    if(kind === "them" && senderName && peers.size > 1){
+    // Show the sender name for every incoming message.
+    // The old `peers.size > 1` check prevented names from appearing
+    // in normal 1-to-1 chats and could also fail while history was loading.
+    if(kind === "them" && senderName){
       const tag = document.createElement("div");
       tag.className = "sender-tag";
       tag.textContent = senderName;
@@ -1256,74 +1259,101 @@
   // waitForDrain) instead of polling on a timer, which is what makes this
   // meaningfully faster than before.
   async function sendFileToAll(file){
-    const targets = [...peers.values()]
-      .map(p => ({ peer: p, conn: p.dataConn }))
-      .filter(x => x.conn && x.conn.open && x.conn.dataChannel);
+    const conns = [...peers.values()]
+      .map(p => p.dataConn)
+      .filter(c => c && c.open);
 
-    if(!targets.length){
+    if(!conns.length){
       setStatus(callStatus, "Not connected to anyone yet.", "err");
       return;
     }
 
     const fileId = "f" + (++fileIdCounter) + "-" + Date.now();
-    const url = (isImage(file.type, file.name) || isVideo(file.type, file.name))
-      ? URL.createObjectURL(file) : null;
-    const refs = addFileMsg(file.name, url, "me", humanSize(file.size), file.type, null, true);
+    conns.forEach(c => c.send({
+      type: "file-meta",
+      id: fileId,
+      name: file.name,
+      size: file.size,
+      mime: file.type
+    }));
 
-    // Each recipient gets its own reader/backpressure loop. A slow joiner no
-    // longer throttles faster peers, and smaller chunks reduce memory pressure
-    // and congestion on weaker connections.
+    const url = (isImage(file.type, file.name) || isVideo(file.type, file.name))
+      ? URL.createObjectURL(file)
+      : null;
+
+    // This is the sender's own message/progress UI. It is updated locally
+    // while bytes are being handed to the WebRTC data channel.
+    const refs = addFileMsg(
+      file.name, url, "me", humanSize(file.size), file.type, null, true
+    );
+
     const BUFFER_LIMIT = 4 * 1024 * 1024;
     const DRAIN_THRESHOLD = 1024 * 1024;
+    const reader = file.stream().getReader();
+    let sent = 0;
 
-    async function sendToPeer(target){
-      const { peer, conn } = target;
-      try{
-        conn.send({
-          type: "file-meta",
-          id: fileId,
-          name: file.name,
-          size: file.size,
-          mime: file.type
-        });
+    try{
+      while(true){
+        const { done, value } = await reader.read();
+        if(done) break;
 
-        const reader = file.stream().getReader();
+        let offset = 0;
 
-        try{
-          while(true){
-            const { done, value } = await reader.read();
-            if(done) break;
+        while(offset < value.length){
+          const slice = value.slice(offset, offset + CHUNK_SIZE);
 
-            let offset = 0;
-            while(offset < value.length){
-              if(!conn.open || !conn.dataChannel) throw new Error("peer disconnected");
+          // Send this same slice to every currently-open recipient.
+          // The sender's progress is independent of the recipient UI.
+          const liveConns = conns.filter(c => c.open && c.dataChannel);
+          liveConns.forEach(c => {
+            try{
+              c.send({
+                type: "file-chunk",
+                id: fileId,
+                data: slice
+              });
+            }catch(e){}
+          });
 
-              const slice = value.slice(offset, offset + CHUNK_SIZE);
-              conn.send({ type: "file-chunk", id: fileId, data: slice });
-              offset += slice.length;
+          offset += slice.length;
+          sent = Math.min(file.size, sent + slice.length);
 
-              if(conn.dataChannel.bufferedAmount > BUFFER_LIMIT){
-                await waitForDrain([conn.dataChannel], DRAIN_THRESHOLD);
-              }
-            }
+          // Update immediately on the sender.
+          if(refs.progressFill){
+            refs.progressFill.style.width =
+              Math.min(100, (sent / Math.max(1, file.size)) * 100).toFixed(1) + "%";
           }
 
-          if(conn.open) conn.send({ type: "file-done", id: fileId });
-        } finally {
-          try{ reader.releaseLock(); }catch(e){}
+          const maxBuffered = Math.max(
+            0,
+            ...liveConns.map(c => c.dataChannel.bufferedAmount)
+          );
+
+          if(maxBuffered > BUFFER_LIMIT){
+            await waitForDrain(
+              liveConns.map(c => c.dataChannel),
+              DRAIN_THRESHOLD
+            );
+          }
         }
-      }catch(e){
-        // One slow/disconnected recipient must not cancel transfers to everyone else.
-        console.warn("File transfer stopped for", peer.name, e);
       }
+
+      conns.forEach(c => {
+        if(c.open){
+          try{
+            c.send({ type: "file-done", id: fileId });
+          }catch(e){}
+        }
+      });
+
+      if(refs.progressFill) refs.progressFill.style.width = "100%";
+      setTimeout(() => refs.progressTrack?.classList.add("hidden"), 200);
+
+    }catch(e){
+      console.error("File transfer failed:", e);
+      setStatus(callStatus, "That transfer stopped early — try again.", "err");
     }
-
-    await Promise.all(targets.map(sendToPeer));
-
-    refs.progressFill.style.width = "100%";
-    setTimeout(() => refs.progressTrack.classList.add("hidden"), 200);
   }
-
 
   // ---------- media (camera / mic / screen) ----------
   async function ensureLocalStream(){
@@ -1490,6 +1520,15 @@
   // sending the link to someone else, gets them straight back to the room.
   // The name is kept in sessionStorage (per-tab) so a refresh doesn't ask again.
   const SESSION_KEY = "wireline_session";
+  const NAME_KEY = "wireline_name";
+
+  function saveName(name){
+    try{ if(name) localStorage.setItem(NAME_KEY, name); }catch(e){}
+  }
+  function loadName(){
+    try{ return localStorage.getItem(NAME_KEY) || ""; }catch(e){ return ""; }
+  }
+
 
   function saveSession(role, code, name){
     try{ sessionStorage.setItem(SESSION_KEY, JSON.stringify({ role, code, name })); }catch(e){}
@@ -1517,6 +1556,13 @@
     const url = new URL(location.href);
     url.search = "";
     history.replaceState(null, "", url.toString());
+  }
+
+  // Restore the last-used name so refreshes do not require re-entry.
+  const savedName = loadName();
+  if(savedName){
+    startName.value = savedName;
+    joinName.value = savedName;
   }
 
   // ---------- start / join / leave ----------
@@ -1614,7 +1660,8 @@
   }
 
   function startRoom(code, name, isResume){
-    myName = name || "You";
+    myName = name || loadName() || "You";
+    saveName(myName);
     isHost = true;
     const peerId = codeToPeerId(code);
     startBtn.disabled = true;
@@ -1661,6 +1708,7 @@
 
   let resumeCode = null;
   startBtn.addEventListener("click", () => {
+    if(startName.value.trim()) saveName(startName.value.trim());
     if(resumeCode){
       startRoom(resumeCode, startName.value.trim(), true);
     } else {
@@ -1682,7 +1730,8 @@
   });
 
   function joinRoom(code, name, isResume){
-    myName = name || "You";
+    myName = name || loadName() || "You";
+    saveName(myName);
     isHost = false;
     const peerId = codeToPeerId(code);
     joinBtn.disabled = true;
@@ -1713,6 +1762,7 @@
   }
 
   joinBtn.addEventListener("click", () => {
+    if(joinName.value.trim()) saveName(joinName.value.trim());
     const raw = joinCode.value.trim();
     if(!raw){ setStatus(joinStatus, "Type in a code first.", "err"); return; }
     joinRoom(raw, joinName.value.trim(), false);
