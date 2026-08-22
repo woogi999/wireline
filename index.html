@@ -702,7 +702,7 @@
   let localStream = null;
   let screenStream = null;
   let myName = "You";
-  const CHUNK_SIZE = 64 * 1024;
+  const CHUNK_SIZE = 32 * 1024; // Smaller chunks are friendlier to slower WebRTC connections
   let fileIdCounter = 0;
   let incomingFiles = new Map(); // `${peerId}:${fileId}` -> {name,size,mime,chunks,received,senderName,refs}
   let chatHistory = []; // {senderName, text} — replayed to peers who join later
@@ -769,7 +769,7 @@
   function getOrCreatePeer(id, name){
     let p = peers.get(id);
     if(!p){
-      p = { id, name: name || "Them", dataConn: null, mediaConn: null };
+      p = { id, name: name || "Them", dataConn: null, mediaConn: null, dataConnToken: 0, mediaConnToken: 0 };
       peers.set(id, p);
       createPeerTile(p);
     } else if(name && p.name !== name){
@@ -782,19 +782,21 @@
 
   // Fully tears down a peer's tile, video stream, and call when they leave —
   // nothing lingers on screen after they're gone.
-  function removePeer(id){
+  function removePeer(id, announce = true){
     const p = peers.get(id);
     if(!p) return;
+
     if(p.mediaConn){ try{ p.mediaConn.close(); }catch(e){} }
-    if(p.videoEl){
-      p.videoEl.srcObject = null;
-      p.videoEl.classList.add("hidden");
-    }
+    if(p.videoEl) p.videoEl.srcObject = null;
     if(p.dataConn){ try{ p.dataConn.close(); }catch(e){} }
+
     if(p.tile) p.tile.remove();
     peers.delete(id);
+
+    if(announce && p.name && p.name !== "Them") addMsg(`${p.name} left`, "system");
     updateConnectionStatus();
   }
+
 
   function openVideoModal(stream, name){
     if(!stream) return;
@@ -932,26 +934,60 @@
   function wireDataConn(conn, presetName){
     const id = conn.peer;
     const p = getOrCreatePeer(id, presetName);
+
+    // A room should have at most one live data connection per peer. PeerJS can
+    // create a second connection during retries/roster discovery; keep the
+    // first usable one and immediately discard duplicates so they cannot create
+    // extra tiles or duplicate messages.
+    if(p.dataConn && p.dataConn !== conn){
+      const old = p.dataConn;
+      const oldOpen = old.open;
+      if(oldOpen || old._wirelineConnecting){
+        try{ conn.close(); }catch(e){}
+        return;
+      }
+      try{ old.close(); }catch(e){}
+    }
+
+    const token = ++p.dataConnToken;
+    conn._wirelineConnecting = true;
     p.dataConn = conn;
+
     conn.on("open", () => {
+      if(peers.get(id) !== p || p.dataConnToken !== token){
+        try{ conn.close(); }catch(e){}
+        return;
+      }
+      conn._wirelineConnecting = false;
       conn.send({ type: "hello", name: myName });
       updateConnectionStatus();
+
       if(isHost){
-        // Tell the newcomer who else is already in the room so they can
-        // connect directly to each of them (full mesh, not just to us).
-        const roster = [...peers.keys()].filter(pid => pid !== id).map(pid => ({ id: pid, name: peers.get(pid).name }));
+        const roster = [...peers.values()]
+          .filter(other => other.id !== id && other.dataConn && other.dataConn.open)
+          .map(other => ({ id: other.id, name: other.name }));
+
         conn.send({ type: "roster", peers: roster });
-        // Replay chat sent before they joined, so they aren't dropped into
-        // a conversation with no context.
+
+        // Replay everything the host said before this person joined.
         if(chatHistory.length) conn.send({ type: "history", items: chatHistory });
       }
     });
+
     conn.on("data", (msg) => handleData(msg, id));
-    conn.on("close", () => {
-      addMsg(`${p.name} left`, "system");
-      removePeer(id);
-    });
+
+    const cleanupIfCurrent = () => {
+      if(peers.get(id) !== p || p.dataConnToken !== token) return;
+      p.dataConn = null;
+      conn._wirelineConnecting = false;
+      // A failed connection should not leave a stale video tile behind.
+      removePeer(id, false);
+    };
+
+    conn.on("close", cleanupIfCurrent);
+    conn.on("error", cleanupIfCurrent);
   }
+
 
   function handleData(msg, fromId){
     const p = peers.get(fromId);
@@ -964,14 +1000,16 @@
       if(isNew) addMsg(`${p.name} joined`, "system");
     } else if(msg.type === "roster"){
       (msg.peers || []).forEach(entry => {
-        if(entry.id === myId || peers.has(entry.id)) return;
+        if(entry.id === myId) return;
+
+        const existing = peers.get(entry.id);
+        if(existing && existing.dataConn) return;
+
         const conn2 = myPeer.connect(entry.id, { reliable: true });
         wireDataConn(conn2, entry.name);
+
         if(localStream && localStream.getTracks().length > 0){
-          const call = myPeer.call(entry.id, localStream);
-          const np = peers.get(entry.id);
-          np.mediaConn = call;
-          wireMediaConn(call, entry.id);
+          startMediaCall(entry.id);
         }
       });
     } else if(msg.type === "history"){
@@ -1008,8 +1046,22 @@
   function sendChat(){
     const text = chatInput.value.trim();
     if(!text) return;
+
+    // The host can chat before anyone joins. The message is stored in
+    // chatHistory and will be replayed to every future joiner.
+    if(isHost){
+      addMsg(text, "me");
+      [...peers.values()]
+        .map(p => p.dataConn)
+        .filter(c => c && c.open)
+        .forEach(c => c.send({ type: "chat", text }));
+      chatInput.value = "";
+      return;
+    }
+
     const conns = [...peers.values()].map(p => p.dataConn).filter(c => c && c.open);
     if(!conns.length){ setStatus(callStatus, "Not connected yet.", "err"); return; }
+
     conns.forEach(c => c.send({ type: "chat", text }));
     addMsg(text, "me");
     chatInput.value = "";
@@ -1141,46 +1193,74 @@
   // waitForDrain) instead of polling on a timer, which is what makes this
   // meaningfully faster than before.
   async function sendFileToAll(file){
-    const conns = [...peers.values()].map(p => p.dataConn).filter(c => c && c.open);
-    if(!conns.length){ setStatus(callStatus, "Not connected to anyone yet.", "err"); return; }
+    const targets = [...peers.values()]
+      .map(p => ({ peer: p, conn: p.dataConn }))
+      .filter(x => x.conn && x.conn.open && x.conn.dataChannel);
+
+    if(!targets.length){
+      setStatus(callStatus, "Not connected to anyone yet.", "err");
+      return;
+    }
 
     const fileId = "f" + (++fileIdCounter) + "-" + Date.now();
-    conns.forEach(c => c.send({ type: "file-meta", id: fileId, name: file.name, size: file.size, mime: file.type }));
-    const url = (isImage(file.type, file.name) || isVideo(file.type, file.name)) ? URL.createObjectURL(file) : null;
+    const url = (isImage(file.type, file.name) || isVideo(file.type, file.name))
+      ? URL.createObjectURL(file) : null;
     const refs = addFileMsg(file.name, url, "me", humanSize(file.size), file.type, null, true);
 
-    const BUFFER_LIMIT = 16 * CHUNK_SIZE;
-    const DRAIN_THRESHOLD = 4 * CHUNK_SIZE;
-    const reader = file.stream().getReader();
-    let sent = 0;
+    // Each recipient gets its own reader/backpressure loop. A slow joiner no
+    // longer throttles faster peers, and smaller chunks reduce memory pressure
+    // and congestion on weaker connections.
+    const BUFFER_LIMIT = 8 * CHUNK_SIZE;
+    const DRAIN_THRESHOLD = 2 * CHUNK_SIZE;
 
-    try{
-      while(true){
-        const { done, value } = await reader.read();
-        if(done) break;
+    async function sendToPeer(target){
+      const { peer, conn } = target;
+      try{
+        conn.send({
+          type: "file-meta",
+          id: fileId,
+          name: file.name,
+          size: file.size,
+          mime: file.type
+        });
 
-        let offset = 0;
-        while(offset < value.length){
-          const slice = value.slice(offset, offset + CHUNK_SIZE);
-          conns.forEach(c => { if(c.open) c.send({ type: "file-chunk", id: fileId, data: slice }); });
-          sent += slice.length;
-          refs.progressFill.style.width = Math.min(100, (sent/file.size*100)).toFixed(1) + "%";
-          offset += CHUNK_SIZE;
+        const reader = file.stream().getReader();
 
-          const liveConns = conns.filter(c => c.open && c.dataChannel);
-          const maxBuffered = Math.max(0, ...liveConns.map(c => c.dataChannel.bufferedAmount));
-          if(maxBuffered > BUFFER_LIMIT){
-            await waitForDrain(liveConns.map(c => c.dataChannel), DRAIN_THRESHOLD);
+        try{
+          while(true){
+            const { done, value } = await reader.read();
+            if(done) break;
+
+            let offset = 0;
+            while(offset < value.length){
+              if(!conn.open || !conn.dataChannel) throw new Error("peer disconnected");
+
+              const slice = value.slice(offset, offset + CHUNK_SIZE);
+              conn.send({ type: "file-chunk", id: fileId, data: slice });
+              offset += slice.length;
+
+              if(conn.dataChannel.bufferedAmount > BUFFER_LIMIT){
+                await waitForDrain([conn.dataChannel], DRAIN_THRESHOLD);
+              }
+            }
           }
+
+          if(conn.open) conn.send({ type: "file-done", id: fileId });
+        } finally {
+          try{ reader.releaseLock(); }catch(e){}
         }
+      }catch(e){
+        // One slow/disconnected recipient must not cancel transfers to everyone else.
+        console.warn("File transfer stopped for", peer.name, e);
       }
-      conns.forEach(c => { if(c.open) c.send({ type: "file-done", id: fileId }); });
-      refs.progressFill.style.width = "100%";
-      setTimeout(() => refs.progressTrack.classList.add("hidden"), 200);
-    }catch(e){
-      setStatus(callStatus, "That transfer stopped early — try again.", "err");
     }
+
+    await Promise.all(targets.map(sendToPeer));
+
+    refs.progressFill.style.width = "100%";
+    setTimeout(() => refs.progressTrack.classList.add("hidden"), 200);
   }
+
 
   // ---------- media (camera / mic / screen) ----------
   async function ensureLocalStream(){
@@ -1190,41 +1270,65 @@
     return localStream;
   }
 
-  // PeerJS's MediaConnection doesn't renegotiate an already-open call when
-  // tracks are added/removed later, so a sender added after the fact never
-  // actually reaches the other side. The reliable fix is to place a fresh
-  // call to every connected peer whenever the local track set changes; each
-  // receiving end's "call" handler replaces its old mediaConn for us.
+  // Media calls are kept separate from data connections. Only one active call
+  // is allowed per peer; stale call events cannot blank a newer video stream.
+  function startMediaCall(peerId){
+    const p = peers.get(peerId);
+    if(!p || !myPeer) return;
+    if(!localStream || !localStream.getTracks().length) return;
+
+    if(p.mediaConn){
+      try{ p.mediaConn.close(); }catch(e){}
+    }
+
+    const token = ++p.mediaConnToken;
+    const call = myPeer.call(peerId, localStream);
+    p.mediaConn = call;
+    wireMediaConn(call, peerId, token);
+  }
+
   function refreshCallAll(){
     if(!myPeer) return;
     peers.forEach((p, id) => {
-      if(p.mediaConn){ try{ p.mediaConn.close(); }catch(e){} p.mediaConn = null; }
       if(localStream && localStream.getTracks().length > 0){
-        const call = myPeer.call(id, localStream);
-        p.mediaConn = call;
-        wireMediaConn(call, id);
+        startMediaCall(id);
+      } else if(p.mediaConn){
+        try{ p.mediaConn.close(); }catch(e){}
+        p.mediaConn = null;
+        if(p.videoEl) p.videoEl.srcObject = null;
+        if(p.videoEl) p.videoEl.classList.add("hidden");
+        if(p.placeholderEl) p.placeholderEl.classList.remove("hidden");
+        if(p.labelEl) p.labelEl.classList.add("hidden");
       }
     });
   }
 
-  function wireMediaConn(conn, peerId){
+  function wireMediaConn(conn, peerId, token){
     conn.on("stream", (remoteStream) => {
       const p = peers.get(peerId);
-      if(!p) return;
+      if(!p || p.mediaConn !== conn || (token && p.mediaConnToken !== token)) return;
+
       p.videoEl.srcObject = remoteStream;
       p.videoEl.classList.remove("hidden");
       p.placeholderEl.classList.add("hidden");
       p.labelEl.classList.remove("hidden");
     });
-    conn.on("close", () => {
+
+    const clearIfCurrent = () => {
       const p = peers.get(peerId);
-      if(!p) return;
-      p.videoEl.srcObject = null;
-      p.videoEl.classList.add("hidden");
-      p.placeholderEl.classList.remove("hidden");
-      p.labelEl.classList.add("hidden");
-    });
+      if(!p || p.mediaConn !== conn || (token && p.mediaConnToken !== token)) return;
+
+      p.mediaConn = null;
+      if(p.videoEl) p.videoEl.srcObject = null;
+      if(p.videoEl) p.videoEl.classList.add("hidden");
+      if(p.placeholderEl) p.placeholderEl.classList.remove("hidden");
+      if(p.labelEl) p.labelEl.classList.add("hidden");
+    };
+
+    conn.on("close", clearIfCurrent);
+    conn.on("error", clearIfCurrent);
   }
+
 
   let micOn = false, camOn = false, sharingScreen = false;
 
@@ -1383,10 +1487,15 @@
     await ensureLocalStream();
     const id = call.peer;
     const p = getOrCreatePeer(id);
-    if(p.mediaConn){ try{ p.mediaConn.close(); }catch(e){} }
-    call.answer(localStream);
+
+    if(p.mediaConn){
+      try{ p.mediaConn.close(); }catch(e){}
+    }
+
+    const token = ++p.mediaConnToken;
     p.mediaConn = call;
-    wireMediaConn(call, id);
+    call.answer(localStream);
+    wireMediaConn(call, id, token);
   }
 
   function startRoom(code, name, isResume){
