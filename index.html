@@ -282,7 +282,8 @@
 
   .videos{display:flex; flex-wrap:wrap; gap:8px; min-width:0;}
   .videos > .video-box{flex:1 1 220px; min-width:180px; max-width:420px;}
-  .floating-video{position:fixed; z-index:35; width:220px; height:145px; right:24px; bottom:24px; aspect-ratio:auto !important; box-shadow:0 10px 30px rgba(0,0,0,.22); cursor:grab; user-select:none;}
+  .floating-video{position:fixed; z-index:35; width:220px; height:145px; right:24px; top:24px; bottom:auto; aspect-ratio:auto !important; box-shadow:0 10px 30px rgba(0,0,0,.22); cursor:grab; user-select:none;}
+  #stageLocalSlot > .video-box{width:220px; height:145px; min-width:220px; max-width:220px; flex:0 0 220px; aspect-ratio:auto;}
   .floating-video:active{cursor:grabbing;}
   .floating-grip{position:absolute; top:6px; left:50%; transform:translateX(-50%); padding:1px 8px; border-radius:10px; background:rgba(0,0,0,.35); color:#fff; opacity:.75; pointer-events:none;}
   .floating-grip svg{width:15px;height:15px;}
@@ -416,8 +417,9 @@
   .msg ul{margin:4px 0 4px 18px; padding:0;}
   .msg strong{font-weight:700;}
   .msg{
+    width:fit-content;
     max-width:100%;
-    padding:9px 13px;
+    padding:8px 11px;
     border-radius:16px;
     font-size:14px;
     word-break:break-word;
@@ -542,7 +544,8 @@
     }
     .media-grid{flex-direction:column;}
     .media-grid .video-box{width:100%; max-width:none;}
-    .floating-video{width:180px;height:120px;right:12px;bottom:12px;}
+    .floating-video{width:180px;height:120px;right:12px;top:12px;bottom:auto;}
+    #stageLocalSlot > .video-box{width:180px;height:120px;min-width:180px;max-width:180px;flex-basis:180px;}
     .call-controls{flex-direction:row; flex-wrap:wrap; flex:1 1 100%;}
     .call-controls .btn{width:auto; flex:1;}
   }
@@ -627,7 +630,7 @@
           <div id="membersList"></div>
         </div>
 
-        <div class="floating-video video-box" id="localBox" title="Drag to move • Click to expand cameras">
+        <div class="floating-video video-box" id="localBox" title="Click to expand • Drag to float">
           <video id="localVideo" autoplay playsinline muted></video>
           <div class="label" id="localLabel"><svg data-lucide="user"></svg>You</div>
           <div class="floating-grip"><svg data-lucide="grip-horizontal"></svg></div>
@@ -859,7 +862,7 @@
   function getOrCreatePeer(id, name){
     let p = peers.get(id);
     if(!p){
-      p = { id, name: name || "Them", dataConn: null, mediaConn: null, dataConnToken: 0, mediaConnToken: 0, isHostConnection: false, authenticated: false, clientId: "" };
+      p = { id, name: name || "Them", dataConn: null, mediaConn: null, dataConnToken: 0, mediaConnToken: 0, isHostConnection: false, authenticated: false, clientId: "", lastSeen: Date.now() };
       peers.set(id, p);
       createPeerTile(p);
       if(isHost || p.isHostConnection) updateKnownMember(id, p.name, !!p.isHostConnection);
@@ -951,6 +954,11 @@
     mediaStage.classList.add("open");
     stageLocalSlot.appendChild(localBox);
     localBox.classList.remove("floating-video");
+    // Keep the local camera exactly the same size when expanded.
+    localBox.style.left = "";
+    localBox.style.top = "";
+    localBox.style.right = "";
+    localBox.style.bottom = "";
     remoteVideosEl.style.display = "flex";
     collapseMedia?.focus({preventScroll:true});
   }
@@ -959,25 +967,55 @@
     mediaStage.classList.remove("open");
     document.body.appendChild(localBox);
     localBox.classList.add("floating-video");
+    // Return to the default top-right position unless the user has dragged it.
+    if(!localBox.style.left && !localBox.style.top){
+      localBox.style.right = "";
+      localBox.style.top = "";
+    }
+    localBox.style.bottom = "auto";
     remoteVideosEl.style.display = "none";
   }
   collapseMedia?.addEventListener("click", collapseMediaView);
   localBox.addEventListener("pointerdown", e => {
-    if(mediaExpanded) return;
-    draggingLocal = true; dragMoved = false;
-    const r = localBox.getBoundingClientRect(); dragDX = e.clientX-r.left; dragDY=e.clientY-r.top;
+    draggingLocal = true;
+    dragMoved = false;
+    const r = localBox.getBoundingClientRect();
+    dragDX = e.clientX-r.left;
+    dragDY = e.clientY-r.top;
     localBox.setPointerCapture?.(e.pointerId);
   });
   localBox.addEventListener("pointermove", e => {
-    if(!draggingLocal || mediaExpanded) return;
+    if(!draggingLocal) return;
+
+    // A real drag while expanded turns the camera back into a floating camera.
+    if(mediaExpanded){
+      const r = localBox.getBoundingClientRect();
+      if(Math.abs(e.clientX-(r.left+dragDX)) < 4 && Math.abs(e.clientY-(r.top+dragDY)) < 4) return;
+      dragMoved = true;
+      const x = Math.max(8, Math.min(window.innerWidth-r.width-8, e.clientX-dragDX));
+      const y = Math.max(8, Math.min(window.innerHeight-r.height-8, e.clientY-dragDY));
+      mediaExpanded = false;
+      mediaStage.classList.remove("open");
+      document.body.appendChild(localBox);
+      localBox.classList.add("floating-video");
+      remoteVideosEl.style.display = "none";
+      localBox.style.left = x + "px";
+      localBox.style.top = y + "px";
+      localBox.style.right = "auto";
+      localBox.style.bottom = "auto";
+      return;
+    }
+
     dragMoved = true;
     localBox.style.left = Math.max(8, Math.min(window.innerWidth-localBox.offsetWidth-8, e.clientX-dragDX)) + "px";
     localBox.style.top = Math.max(8, Math.min(window.innerHeight-localBox.offsetHeight-8, e.clientY-dragDY)) + "px";
-    localBox.style.right = "auto"; localBox.style.bottom = "auto";
+    localBox.style.right = "auto";
+    localBox.style.bottom = "auto";
   });
   localBox.addEventListener("pointerup", e => {
-    if(!draggingLocal) return; draggingLocal=false;
-    if(!dragMoved) expandMedia();
+    if(!draggingLocal) return;
+    draggingLocal=false;
+    if(!dragMoved && !mediaExpanded) expandMedia();
   });
 
 
@@ -1148,6 +1186,7 @@
         return;
       }
       conn._wirelineConnecting = false;
+      p.lastSeen = Date.now();
       conn.send({ type: "hello", name: myName, password: roomPassword, clientId });
       updateConnectionStatus();
     });
@@ -1174,6 +1213,12 @@
   function handleData(msg, fromId){
     const p = peers.get(fromId);
     if(!p) return;
+    p.lastSeen = Date.now();
+    if(msg.type === "presence-ping"){
+      try{ p.dataConn?.send({type:"presence-pong"}); }catch(e){}
+      return;
+    }
+    if(msg.type === "presence-pong") return;
     if(msg.type === "hello"){
       if(isHost){
         if(msg.clientId && bannedClientIds.has(String(msg.clientId))){
@@ -1283,6 +1328,28 @@
       incomingFiles.delete(key);
     }
   }
+
+  // PeerJS/WebRTC does not guarantee that a remote browser closing abruptly will
+  // immediately emit a close event on every other browser. A small application-level
+  // heartbeat makes the lobby/member list self-healing after a hard browser quit.
+  const PRESENCE_INTERVAL = 3000;
+  const PRESENCE_TIMEOUT = 12000;
+  setInterval(() => {
+    const now = Date.now();
+    peers.forEach((p, id) => {
+      if(!p.authenticated || !p.dataConn) return;
+      if(!p.dataConn.open || now - (p.lastSeen || now) > PRESENCE_TIMEOUT){
+        const wasHostConnection = p.isHostConnection;
+        removePeer(id, true);
+        if(!isHost && wasHostConnection && !hostClosingRoom){
+          hostClosingRoom = true;
+          kickBecauseHostLeft();
+        }
+        return;
+      }
+      try{ p.dataConn.send({type:"presence-ping"}); }catch(e){}
+    });
+  }, PRESENCE_INTERVAL);
 
   chatSendBtn.addEventListener("click", sendChat);
   function wrapSelection(before, after=before){
