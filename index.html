@@ -310,8 +310,9 @@
     aspect-ratio:4/3;
     width:100%;
     transition:box-shadow .2s var(--ease);
+    cursor:zoom-in;
   }
-  .video-box video{width:100%; height:100%; object-fit:cover; display:block;}
+  .video-box video{width:100%; height:100%; object-fit:contain; display:block; background:var(--video-bg);}
   .video-box .label{
     position:absolute;
     bottom:8px; left:10px;
@@ -325,9 +326,10 @@
     display:flex;
     align-items:center;
     gap:5px;
+    pointer-events:none;
   }
   .video-box .label svg{width:12px; height:12px;}
-  .video-box.empty{display:flex; align-items:center; justify-content:center;}
+  .video-box.empty{display:flex; align-items:center; justify-content:center; cursor:default;}
   .video-box.empty .placeholder{
     color:#71717a;
     font-size:13px;
@@ -337,6 +339,15 @@
     gap:8px;
   }
   .video-box.speaking{box-shadow:0 0 0 2px var(--accent);}
+
+  .video-modal{
+    position:fixed; inset:0; z-index:50;
+    background:rgba(0,0,0,0.85);
+    display:flex; align-items:center; justify-content:center;
+    cursor:zoom-out;
+    animation:fadeIn .15s var(--ease);
+  }
+  .video-modal video{max-width:92vw; max-height:92vh; border-radius:10px; background:#000;}
 
   .call-controls{
     display:flex;
@@ -424,6 +435,12 @@
     display:flex;
     align-items:center;
     gap:8px;
+  }
+  .file-sender-tag{
+    font-size:11px;
+    font-weight:700;
+    color:var(--muted);
+    margin-bottom:3px;
   }
   .msg .file-chip a{color:inherit; font-weight:600; text-decoration:underline; font-size:13.5px;}
   .msg .file-chip svg{flex-shrink:0;}
@@ -560,11 +577,7 @@
             <video id="localVideo" autoplay playsinline muted></video>
             <div class="label" id="localLabel"><svg data-lucide="user"></svg>You</div>
           </div>
-          <div class="video-box empty" id="remoteBox">
-            <video id="remoteVideo" autoplay playsinline class="hidden"></video>
-            <div class="placeholder" id="remotePlaceholder"><svg data-lucide="video-off"></svg>Waiting for video</div>
-            <div class="label hidden" id="remoteLabel"><svg data-lucide="user"></svg>Them</div>
-          </div>
+          <div class="videos" id="remoteVideos"></div>
         </div>
 
         <div class="call-controls">
@@ -686,21 +699,21 @@
 
   // ---------- shared state ----------
   let myPeer = null;
-  let dataConn = null;
-  let mediaConn = null;
+  let myId = null;
+  let isHost = false;
+  let peers = new Map(); // peerId -> { id, name, dataConn, mediaConn, tile, videoEl, placeholderEl, labelEl }
   let localStream = null;
   let screenStream = null;
   let myName = "You";
-  let theirName = "Them";
   const CHUNK_SIZE = 16 * 1024;
+  let fileIdCounter = 0;
+  let incomingFiles = new Map(); // `${peerId}:${fileId}` -> {name,size,mime,chunks,received,senderName}
 
   const landing = document.getElementById("landing");
   const roomView = document.getElementById("roomView");
   const roomCodeTag = document.getElementById("roomCodeTag");
   const localVideo = document.getElementById("localVideo");
-  const remoteVideo = document.getElementById("remoteVideo");
-  const remotePlaceholder = document.getElementById("remotePlaceholder");
-  const remoteLabel = document.getElementById("remoteLabel");
+  const remoteVideosEl = document.getElementById("remoteVideos");
   const localLabel = document.getElementById("localLabel");
   const micBtn = document.getElementById("micBtn");
   const camBtn = document.getElementById("camBtn");
@@ -715,25 +728,101 @@
   const chatSendBtn = document.getElementById("chatSendBtn");
   const leaveBtn = document.getElementById("leaveBtn");
 
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  }
+
   function enterRoom(code){
     landing.style.display = "none";
     roomView.classList.add("open");
     roomCodeTag.textContent = code;
-    localLabel.innerHTML = '<svg data-lucide="user"></svg>' + myName;
+    localLabel.innerHTML = '<svg data-lucide="user"></svg>' + escapeHtml(myName);
     icons();
   }
 
-  function addMsg(text, kind){
+  function updateConnectionStatus(){
+    const n = peers.size;
+    if(n === 0) setStatus(callStatus, "Waiting for someone to join", null, true);
+    else if(n === 1) setStatus(callStatus, "Connected", "ok", true);
+    else setStatus(callStatus, `Connected · ${n} people`, "ok", true);
+  }
+
+  // ---------- video tile for each connected peer ----------
+  function createPeerTile(p){
+    const box = document.createElement("div");
+    box.className = "video-box empty";
+    box.dataset.peer = p.id;
+    box.innerHTML = `
+      <video autoplay playsinline class="hidden"></video>
+      <div class="placeholder"><svg data-lucide="video-off"></svg>Waiting for video</div>
+      <div class="label hidden"><svg data-lucide="user"></svg>${escapeHtml(p.name)}</div>
+    `;
+    box.addEventListener("click", () => {
+      if(p.videoEl && !p.videoEl.classList.contains("hidden")) openVideoModal(p.videoEl.srcObject, p.name);
+    });
+    remoteVideosEl.appendChild(box);
+    p.tile = box;
+    p.videoEl = box.querySelector("video");
+    p.placeholderEl = box.querySelector(".placeholder");
+    p.labelEl = box.querySelector(".label");
+    icons();
+  }
+
+  function getOrCreatePeer(id, name){
+    let p = peers.get(id);
+    if(!p){
+      p = { id, name: name || "Them", dataConn: null, mediaConn: null };
+      peers.set(id, p);
+      createPeerTile(p);
+    } else if(name && p.name !== name){
+      p.name = name;
+      if(p.labelEl) p.labelEl.innerHTML = '<svg data-lucide="user"></svg>' + escapeHtml(name);
+      icons();
+    }
+    return p;
+  }
+
+  function removePeer(id){
+    const p = peers.get(id);
+    if(!p) return;
+    if(p.tile) p.tile.remove();
+    peers.delete(id);
+    updateConnectionStatus();
+  }
+
+  function openVideoModal(stream, name){
+    if(!stream) return;
+    const modal = document.createElement("div");
+    modal.className = "video-modal";
+    const vid = document.createElement("video");
+    vid.autoplay = true; vid.playsInline = true; vid.srcObject = stream;
+    if(stream === localStream) vid.muted = true;
+    modal.appendChild(vid);
+    modal.addEventListener("click", () => modal.remove());
+    document.body.appendChild(modal);
+  }
+  localVideo.parentElement.addEventListener("click", () => {
+    if(localStream && localStream.getVideoTracks().length) openVideoModal(localStream, myName);
+  });
+
+  function addMsg(text, kind, senderName){
     const div = document.createElement("div");
     div.className = "msg " + kind;
-    div.textContent = text;
+    div.textContent = (kind === "them" && senderName && peers.size > 1) ? `${senderName}: ${text}` : text;
     chatLog.appendChild(div);
     chatLog.scrollTop = chatLog.scrollHeight;
   }
 
-  function addFileMsg(name, url, kind, sizeLabel, mime){
+  function addFileMsg(name, url, kind, sizeLabel, mime, senderName){
     const div = document.createElement("div");
     div.className = "msg " + kind;
+
+    if(kind === "them" && senderName && peers.size > 1){
+      const tag = document.createElement("div");
+      tag.className = "file-sender-tag";
+      tag.textContent = senderName;
+      div.appendChild(tag);
+    }
 
     if(url && isImage(mime, name)){
       const img = document.createElement("img");
@@ -789,50 +878,74 @@
     document.body.appendChild(box);
   }
 
-  // ---------- data channel wiring (chat + file transfer) ----------
-  let incomingFile = null;
-
-  function wireDataConn(conn){
-    dataConn = conn;
+  // ---------- data channel wiring (chat + file transfer + mesh discovery) ----------
+  function wireDataConn(conn, presetName){
+    const id = conn.peer;
+    const p = getOrCreatePeer(id, presetName);
+    p.dataConn = conn;
     conn.on("open", () => {
-      setStatus(callStatus, "Connected", "ok", true);
-      addMsg(`${theirName} joined`, "system");
       conn.send({ type: "hello", name: myName });
+      updateConnectionStatus();
+      if(isHost){
+        // Tell the newcomer who else is already in the room so they can
+        // connect directly to each of them (full mesh, not just to us).
+        const roster = [...peers.keys()].filter(pid => pid !== id).map(pid => ({ id: pid, name: peers.get(pid).name }));
+        conn.send({ type: "roster", peers: roster });
+      }
     });
-    conn.on("data", handleData);
+    conn.on("data", (msg) => handleData(msg, id));
     conn.on("close", () => {
-      setStatus(callStatus, "They left the room", "err");
-      addMsg(`${theirName} left`, "system");
-      remoteVideo.classList.add("hidden");
-      remotePlaceholder.classList.remove("hidden");
-      remoteLabel.classList.add("hidden");
+      addMsg(`${p.name} left`, "system");
+      removePeer(id);
     });
   }
 
-  function handleData(msg){
+  function handleData(msg, fromId){
+    const p = peers.get(fromId);
+    if(!p) return;
     if(msg.type === "hello"){
-      theirName = msg.name || "Them";
-      remoteLabel.innerHTML = '<svg data-lucide="user"></svg>' + theirName;
+      const isNew = p.name === "Them" || p.name !== msg.name;
+      p.name = msg.name || "Them";
+      if(p.labelEl) p.labelEl.innerHTML = '<svg data-lucide="user"></svg>' + escapeHtml(p.name);
       icons();
+      if(isNew) addMsg(`${p.name} joined`, "system");
+    } else if(msg.type === "roster"){
+      (msg.peers || []).forEach(entry => {
+        if(entry.id === myId || peers.has(entry.id)) return;
+        const conn2 = myPeer.connect(entry.id, { reliable: true });
+        wireDataConn(conn2, entry.name);
+        if(localStream && localStream.getTracks().length > 0){
+          const call = myPeer.call(entry.id, localStream);
+          const np = peers.get(entry.id);
+          np.mediaConn = call;
+          wireMediaConn(call, entry.id);
+        }
+      });
     } else if(msg.type === "chat"){
-      addMsg(msg.text, "them");
+      addMsg(msg.text, "them", p.name);
     } else if(msg.type === "file-meta"){
-      incomingFile = { name: msg.name, size: msg.size, mime: msg.mime, chunks: [], received: 0 };
+      incomingFiles.set(`${fromId}:${msg.id}`, { name: msg.name, size: msg.size, mime: msg.mime, chunks: [], received: 0, senderName: p.name });
       fileProgressTrack.classList.remove("hidden");
     } else if(msg.type === "file-chunk"){
-      if(!incomingFile) return;
-      incomingFile.chunks.push(msg.data);
-      incomingFile.received += msg.data.byteLength || msg.data.length || 0;
-      const pct = incomingFile.size ? Math.min(100, incomingFile.received/incomingFile.size*100) : 0;
+      const key = `${fromId}:${msg.id}`;
+      const f = incomingFiles.get(key);
+      if(!f) return;
+      f.chunks.push(msg.data);
+      f.received += msg.data.byteLength || msg.data.length || 0;
+      const pct = f.size ? Math.min(100, f.received/f.size*100) : 0;
       fileProgressFill.style.width = pct.toFixed(1) + "%";
     } else if(msg.type === "file-done"){
-      if(!incomingFile) return;
-      const blob = new Blob(incomingFile.chunks, { type: incomingFile.mime || "application/octet-stream" });
+      const key = `${fromId}:${msg.id}`;
+      const f = incomingFiles.get(key);
+      if(!f) return;
+      const blob = new Blob(f.chunks, { type: f.mime || "application/octet-stream" });
       const url = URL.createObjectURL(blob);
-      addFileMsg(incomingFile.name, url, "them", humanSize(incomingFile.size), incomingFile.mime);
-      fileProgressTrack.classList.add("hidden");
-      fileProgressFill.style.width = "0%";
-      incomingFile = null;
+      addFileMsg(f.name, url, "them", humanSize(f.size), f.mime, f.senderName);
+      incomingFiles.delete(key);
+      if(incomingFiles.size === 0){
+        fileProgressTrack.classList.add("hidden");
+        fileProgressFill.style.width = "0%";
+      }
     }
   }
 
@@ -840,8 +953,10 @@
   chatInput.addEventListener("keydown", (e) => { if(e.key === "Enter") sendChat(); });
   function sendChat(){
     const text = chatInput.value.trim();
-    if(!text || !dataConn || !dataConn.open) return;
-    dataConn.send({ type: "chat", text });
+    if(!text) return;
+    const conns = [...peers.values()].map(p => p.dataConn).filter(c => c && c.open);
+    if(!conns.length){ setStatus(callStatus, "Not connected yet.", "err"); return; }
+    conns.forEach(c => c.send({ type: "chat", text }));
     addMsg(text, "me");
     chatInput.value = "";
   }
@@ -892,22 +1007,24 @@
     if(!files || !files.length) return;
 
     if(files.length === 1){
-      sendFileOverData(files[0]);
+      sendFileToAll(files[0]);
       return;
     }
 
     const mediaFiles = files.filter(f => isImage(f.type, f.name) || isVideo(f.type, f.name));
     const otherFiles = files.filter(f => !(isImage(f.type, f.name) || isVideo(f.type, f.name)));
 
-    // Images and videos keep their individual previews, so send those as-is.
-    mediaFiles.forEach(f => sendFileOverData(f));
+    // Images and videos keep their individual previews, so send those as-is —
+    // and every transfer below carries its own id, so they can all start
+    // sending in parallel instead of waiting on each other.
+    mediaFiles.forEach(f => sendFileToAll(f));
 
     if(otherFiles.length === 1){
-      sendFileOverData(otherFiles[0]);
+      sendFileToAll(otherFiles[0]);
     } else if(otherFiles.length > 1){
-      zipFiles(otherFiles).then(zipFile => sendFileOverData(zipFile)).catch(() => {
+      zipFiles(otherFiles).then(zipFile => sendFileToAll(zipFile)).catch(() => {
         setStatus(callStatus, "Couldn't zip those files — sending separately.", "err");
-        otherFiles.forEach(f => sendFileOverData(f));
+        otherFiles.forEach(f => sendFileToAll(f));
       });
     }
   }
@@ -935,9 +1052,15 @@
     });
   }
 
-  function sendFileOverData(file){
-    if(!dataConn || !dataConn.open){ setStatus(callStatus, "Not connected yet.", "err"); return; }
-    dataConn.send({ type: "file-meta", name: file.name, size: file.size, mime: file.type });
+  // Broadcasts one file to every connected peer at once. Each transfer gets
+  // its own id, so several transfers (or several peers) can be in flight at
+  // the same time without one waiting on another or corrupting a shared buffer.
+  function sendFileToAll(file){
+    const conns = [...peers.values()].map(p => p.dataConn).filter(c => c && c.open);
+    if(!conns.length){ setStatus(callStatus, "Not connected to anyone yet.", "err"); return; }
+
+    const fileId = "f" + (++fileIdCounter) + "-" + Date.now();
+    conns.forEach(c => c.send({ type: "file-meta", id: fileId, name: file.name, size: file.size, mime: file.type }));
     const url = (isImage(file.type, file.name) || isVideo(file.type, file.name)) ? URL.createObjectURL(file) : null;
     addFileMsg(file.name, url, "me", humanSize(file.size), file.type);
     fileProgressTrack.classList.remove("hidden");
@@ -947,7 +1070,7 @@
     function pump(){
       reader.read().then(({done, value}) => {
         if(done){
-          dataConn.send({ type: "file-done" });
+          conns.forEach(c => { if(c.open) c.send({ type: "file-done", id: fileId }); });
           fileProgressTrack.classList.add("hidden");
           fileProgressFill.style.width = "0%";
           return;
@@ -956,11 +1079,12 @@
         function sendSlice(){
           if(offset >= value.length){ pump(); return; }
           const slice = value.slice(offset, offset + CHUNK_SIZE);
-          dataConn.send({ type: "file-chunk", data: slice });
+          conns.forEach(c => { if(c.open) c.send({ type: "file-chunk", id: fileId, data: slice }); });
           sent += slice.length;
           fileProgressFill.style.width = Math.min(100, (sent/file.size*100)).toFixed(1) + "%";
           offset += CHUNK_SIZE;
-          if(dataConn.dataChannel && dataConn.dataChannel.bufferedAmount > 8 * CHUNK_SIZE){
+          const maxBuffered = Math.max(0, ...conns.map(c => c.dataChannel ? c.dataChannel.bufferedAmount : 0));
+          if(maxBuffered > 8 * CHUNK_SIZE){
             setTimeout(sendSlice, 20);
           } else {
             sendSlice();
@@ -972,7 +1096,7 @@
     pump();
   }
 
-  // ---------- media (camera / mic) ----------
+  // ---------- media (camera / mic / screen) ----------
   async function ensureLocalStream(){
     if(localStream) return localStream;
     localStream = new MediaStream();
@@ -983,32 +1107,35 @@
   // PeerJS's MediaConnection doesn't renegotiate an already-open call when
   // tracks are added/removed later, so a sender added after the fact never
   // actually reaches the other side. The reliable fix is to place a fresh
-  // call every time the local track set changes; the receiving end's
-  // "call" handler (see startRoom/joinRoom) replaces the old mediaConn.
-  function refreshCall(){
-    if(!myPeer || !roomCodeTag.textContent) return;
-    if(mediaConn){
-      try{ mediaConn.close(); }catch(e){}
-      mediaConn = null;
-    }
-    if(localStream && localStream.getTracks().length > 0){
-      const targetId = codeToPeerId(roomCodeTag.textContent);
-      mediaConn = myPeer.call(targetId, localStream);
-      wireMediaConn(mediaConn);
-    }
+  // call to every connected peer whenever the local track set changes; each
+  // receiving end's "call" handler replaces its old mediaConn for us.
+  function refreshCallAll(){
+    if(!myPeer) return;
+    peers.forEach((p, id) => {
+      if(p.mediaConn){ try{ p.mediaConn.close(); }catch(e){} p.mediaConn = null; }
+      if(localStream && localStream.getTracks().length > 0){
+        const call = myPeer.call(id, localStream);
+        p.mediaConn = call;
+        wireMediaConn(call, id);
+      }
+    });
   }
 
-  function wireMediaConn(conn){
+  function wireMediaConn(conn, peerId){
     conn.on("stream", (remoteStream) => {
-      remoteVideo.srcObject = remoteStream;
-      remoteVideo.classList.remove("hidden");
-      remotePlaceholder.classList.add("hidden");
-      remoteLabel.classList.remove("hidden");
+      const p = peers.get(peerId);
+      if(!p) return;
+      p.videoEl.srcObject = remoteStream;
+      p.videoEl.classList.remove("hidden");
+      p.placeholderEl.classList.add("hidden");
+      p.labelEl.classList.remove("hidden");
     });
     conn.on("close", () => {
-      remoteVideo.classList.add("hidden");
-      remotePlaceholder.classList.remove("hidden");
-      remoteLabel.classList.add("hidden");
+      const p = peers.get(peerId);
+      if(!p) return;
+      p.videoEl.classList.add("hidden");
+      p.placeholderEl.classList.remove("hidden");
+      p.labelEl.classList.add("hidden");
     });
   }
 
@@ -1029,7 +1156,7 @@
         micOn = true;
         micBtn.classList.add("active-toggle");
         setIcon(document.getElementById("micIcon"), "mic");
-        refreshCall();
+        refreshCallAll();
       }catch(e){
         setStatus(callStatus, "Couldn't access your microphone.", "err");
       }
@@ -1038,7 +1165,7 @@
       micOn = false;
       micBtn.classList.remove("active-toggle");
       setIcon(document.getElementById("micIcon"), "mic-off");
-      refreshCall();
+      refreshCallAll();
     }
   });
 
@@ -1052,7 +1179,7 @@
         camOn = true;
         camBtn.classList.add("active-toggle");
         setIcon(document.getElementById("camIcon"), "video");
-        refreshCall();
+        refreshCallAll();
       }catch(e){
         setStatus(callStatus, "Couldn't access your camera.", "err");
       }
@@ -1061,7 +1188,7 @@
       camOn = false;
       camBtn.classList.remove("active-toggle");
       setIcon(document.getElementById("camIcon"), "video-off");
-      refreshCall();
+      refreshCallAll();
     }
   });
 
@@ -1077,7 +1204,7 @@
         sharingScreen = true;
         screenBtn.classList.add("active-toggle");
         setIcon(document.getElementById("screenIcon"), "monitor-x");
-        refreshCall();
+        refreshCallAll();
         track.addEventListener("ended", stopScreenShare);
       }catch(e){
         // user cancelled the picker
@@ -1101,7 +1228,7 @@
     camOn = false;
     camBtn.classList.remove("active-toggle");
     setIcon(document.getElementById("camIcon"), "video-off");
-    refreshCall();
+    refreshCallAll();
   }
 
   // ---------- URL + session persistence ----------
@@ -1164,14 +1291,27 @@
     }, 1400);
   }
 
+  // Shared incoming-call handler for both host and guest peers.
+  async function handleIncomingCall(call){
+    await ensureLocalStream();
+    const id = call.peer;
+    const p = getOrCreatePeer(id);
+    if(p.mediaConn){ try{ p.mediaConn.close(); }catch(e){} }
+    call.answer(localStream);
+    p.mediaConn = call;
+    wireMediaConn(call, id);
+  }
+
   function startRoom(code, name, isResume){
     myName = name || "You";
+    isHost = true;
     const peerId = codeToPeerId(code);
     startBtn.disabled = true;
     setStatus(startStatus, isResume ? "Reopening your room…" : "Opening room…");
 
     myPeer = new Peer(peerId, { debug: 0 });
-    myPeer.on("open", () => {
+    myPeer.on("open", (id) => {
+      myId = id;
       startCode.textContent = code;
       startCodeBlock.classList.remove("hidden");
       setStatus(startStatus, "Waiting for someone to join", null, true);
@@ -1197,15 +1337,10 @@
     });
     myPeer.on("connection", (conn) => {
       wireDataConn(conn);
-      enterRoom(code);
+      if(!roomView.classList.contains("open")) enterRoom(code);
+      updateConnectionStatus();
     });
-    myPeer.on("call", async (call) => {
-      await ensureLocalStream();
-      if(mediaConn){ try{ mediaConn.close(); }catch(e){} }
-      call.answer(localStream);
-      mediaConn = call;
-      wireMediaConn(call);
-    });
+    myPeer.on("call", handleIncomingCall);
   }
 
   let resumeCode = null;
@@ -1226,12 +1361,14 @@
 
   function joinRoom(code, name, isResume){
     myName = name || "You";
+    isHost = false;
     const peerId = codeToPeerId(code);
     joinBtn.disabled = true;
     setStatus(joinStatus, isResume ? "Reconnecting…" : "Connecting…");
 
     myPeer = new Peer(undefined, { debug: 0 });
-    myPeer.on("open", () => {
+    myPeer.on("open", (id) => {
+      myId = id;
       const conn = myPeer.connect(peerId, { reliable: true });
       wireDataConn(conn);
       conn.on("open", () => {
@@ -1248,13 +1385,7 @@
       }
       joinBtn.disabled = false;
     });
-    myPeer.on("call", async (call) => {
-      await ensureLocalStream();
-      if(mediaConn){ try{ mediaConn.close(); }catch(e){} }
-      call.answer(localStream);
-      mediaConn = call;
-      wireMediaConn(call);
-    });
+    myPeer.on("call", handleIncomingCall);
   }
 
   joinBtn.addEventListener("click", () => {
