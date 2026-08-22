@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wireline — talk and share</title>
+<meta name="description" content="Chat, call, and share your screen straight from your browser. No upload, no account.">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
+<style>
+  :root{
+    --bg: #ffffff;
+    --panel: #f6f6f7;
+    --border: #e2e2e4;
+    --text: #1a1a1a;
+    --muted: #767676;
+    --accent: #2563eb;
+    --ok: #1a7f45;
+    --err: #c0392b;
+    --bubble-me: #2563eb;
+    --bubble-me-text: #ffffff;
+    --bubble-them: #eef0f2;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:var(--font);
+    line-height:1.5;
+  }
+  @media (prefers-reduced-motion: reduce){
+    *{animation-duration:0.001ms !important; transition-duration:0.001ms !important;}
+  }
+
+  .wrap{
+    max-width:560px;
+    margin:0 auto;
+    padding:32px 16px 48px;
+  }
+
+  h1{
+    font-size:22px;
+    font-weight:600;
+    margin:0 0 8px;
+  }
+  p.lead{
+    color:var(--muted);
+    font-size:15px;
+    margin:0 0 24px;
+  }
+
+  .tabs{
+    display:flex;
+    border-bottom:1px solid var(--border);
+    margin-bottom:20px;
+  }
+  .tab{
+    padding:10px 4px;
+    margin-right:24px;
+    font-size:15px;
+    font-weight:500;
+    color:var(--muted);
+    background:none;
+    border:none;
+    border-bottom:2px solid transparent;
+    cursor:pointer;
+  }
+  .tab.active{color:var(--text); border-bottom-color:var(--accent);}
+  .tab:hover:not(.active){color:var(--text);}
+
+  .panel{
+    border:1px solid var(--border);
+    border-radius:8px;
+    padding:20px;
+    background:var(--panel);
+  }
+
+  label{
+    display:block;
+    font-size:13px;
+    color:var(--muted);
+    margin-bottom:8px;
+  }
+
+  .dropzone{
+    border:1px dashed var(--border);
+    border-radius:6px;
+    padding:24px 16px;
+    text-align:center;
+    cursor:pointer;
+    background:var(--bg);
+  }
+  .dropzone:hover, .dropzone.drag{border-color:var(--accent);}
+  .dropzone input{display:none;}
+  .dropzone .hint{color:var(--muted); font-size:14px;}
+  .dropzone .fname{font-size:14px; color:var(--text); word-break:break-all;}
+
+  .code-row{display:flex; gap:8px; margin-top:16px;}
+  .code{
+    flex:1;
+    font-family:ui-monospace, "SFMono-Regular", Consolas, monospace;
+    font-size:16px;
+    background:var(--bg);
+    border:1px solid var(--border);
+    border-radius:6px;
+    padding:10px 12px;
+    text-align:center;
+    user-select:all;
+  }
+
+  .btn{
+    font-size:14px;
+    font-weight:500;
+    padding:10px 16px;
+    border-radius:6px;
+    border:1px solid var(--border);
+    background:var(--bg);
+    color:var(--text);
+    cursor:pointer;
+  }
+  .btn:hover{border-color:var(--accent); color:var(--accent);}
+  .btn:focus-visible, input:focus-visible, .dropzone:focus-visible{
+    outline:2px solid var(--accent);
+    outline-offset:2px;
+  }
+  .btn.primary{background:var(--accent); color:#fff; border-color:var(--accent);}
+  .btn.primary:hover{opacity:0.9; color:#fff;}
+  .btn.danger{color:var(--err); border-color:var(--err);}
+  .btn.danger:hover{background:var(--err); color:#fff;}
+  .btn.active-toggle{background:var(--accent); color:#fff; border-color:var(--accent);}
+  .btn:disabled{opacity:0.5; cursor:not-allowed;}
+  .btn.block{width:100%; margin-top:12px;}
+  .btn.icon{padding:10px 14px; font-size:16px; line-height:1;}
+
+  input[type=text]{
+    font-size:15px;
+    background:var(--bg);
+    border:1px solid var(--border);
+    color:var(--text);
+    border-radius:6px;
+    padding:10px 12px;
+    width:100%;
+  }
+
+  .status{font-size:13px; color:var(--muted); margin-top:12px;}
+  .status.ok{color:var(--ok);}
+  .status.err{color:var(--err);}
+
+  .progress-track{
+    height:4px;
+    background:var(--border);
+    border-radius:2px;
+    overflow:hidden;
+    margin-top:12px;
+  }
+  .progress-fill{height:100%; width:0%; background:var(--accent); transition:width .12s linear;}
+
+  footer{margin-top:28px; font-size:13px; color:var(--muted);}
+  footer a{color:var(--accent); text-decoration:none;}
+  footer a:hover{text-decoration:underline;}
+
+  .hidden{display:none !important;}
+
+  /* --- room view --- */
+  #roomView{display:none;}
+  #roomView.open{display:block;}
+
+  .videos{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:8px;
+    margin-bottom:12px;
+  }
+  .video-box{
+    position:relative;
+    background:#111;
+    border-radius:8px;
+    overflow:hidden;
+    aspect-ratio:4/3;
+  }
+  .video-box video{width:100%; height:100%; object-fit:cover; display:block;}
+  .video-box .label{
+    position:absolute;
+    bottom:6px; left:8px;
+    font-size:12px;
+    color:#fff;
+    background:rgba(0,0,0,0.5);
+    padding:2px 6px;
+    border-radius:4px;
+  }
+  .video-box.empty{display:flex; align-items:center; justify-content:center;}
+  .video-box.empty .placeholder{color:#888; font-size:13px;}
+
+  .call-controls{
+    display:flex;
+    gap:8px;
+    flex-wrap:wrap;
+    margin-bottom:16px;
+  }
+
+  .chat-log{
+    height:280px;
+    overflow-y:auto;
+    border:1px solid var(--border);
+    border-radius:8px;
+    padding:12px;
+    background:var(--bg);
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+    margin-bottom:10px;
+  }
+  .msg{
+    max-width:75%;
+    padding:8px 12px;
+    border-radius:14px;
+    font-size:14px;
+    word-break:break-word;
+  }
+  .msg.me{
+    align-self:flex-end;
+    background:var(--bubble-me);
+    color:var(--bubble-me-text);
+    border-bottom-right-radius:4px;
+  }
+  .msg.them{
+    align-self:flex-start;
+    background:var(--bubble-them);
+    color:var(--text);
+    border-bottom-left-radius:4px;
+  }
+  .msg.system{
+    align-self:center;
+    background:none;
+    color:var(--muted);
+    font-size:12px;
+    max-width:100%;
+  }
+  .msg .file-chip{
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .msg .file-chip a{color:inherit; font-weight:600; text-decoration:underline;}
+
+  .chat-input-row{display:flex; gap:8px;}
+  .chat-input-row input[type=text]{flex:1;}
+
+  .room-header{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    margin-bottom:14px;
+  }
+  .room-header .code-tag{
+    font-family:ui-monospace, "SFMono-Regular", Consolas, monospace;
+    font-size:13px;
+    color:var(--muted);
+  }
+
+  @media (max-width:420px){
+    .videos{grid-template-columns:1fr;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div id="landing">
+    <h1>Wireline</h1>
+    <p class="lead">Open a room, share the code, and talk. Chat, camera, mic, and screen share, straight between two browsers. Nothing is uploaded anywhere.</p>
+
+    <div class="tabs" role="tablist">
+      <button class="tab active" id="tabStart" role="tab" aria-selected="true">Start a room</button>
+      <button class="tab" id="tabJoin" role="tab" aria-selected="false">Join a room</button>
+    </div>
+
+    <!-- START -->
+    <section id="startPanel" class="panel">
+      <label>Your name</label>
+      <input type="text" id="startName" placeholder="e.g. Sam" maxlength="24">
+      <button class="btn primary block" id="startBtn">Open room</button>
+      <div id="startCodeBlock" class="hidden" style="margin-top:16px;">
+        <label>Share this code</label>
+        <div class="code-row">
+          <div class="code" id="startCode">— — — —</div>
+          <button class="btn" id="copyStartCode">Copy</button>
+        </div>
+        <div class="status" id="startStatus">Waiting for someone to join</div>
+      </div>
+    </section>
+
+    <!-- JOIN -->
+    <section id="joinPanel" class="panel hidden">
+      <label>Your name</label>
+      <input type="text" id="joinName" placeholder="e.g. Alex" maxlength="24">
+      <label style="margin-top:12px;">Room code</label>
+      <input type="text" id="joinCode" placeholder="e.g. amber-7-fox-quartz" maxlength="40">
+      <button class="btn primary block" id="joinBtn">Join room</button>
+      <div class="status" id="joinStatus">Enter a code to join</div>
+    </section>
+
+    <footer>
+      Everything, chat, audio, video, and screen share, goes directly between browsers over a private connection. This page only helps the two of you connect. Close the tab and the room ends.<br>
+      Built with <a href="https://peerjs.com" target="_blank" rel="noopener">PeerJS</a>.
+    </footer>
+  </div>
+
+  <!-- ROOM -->
+  <div id="roomView">
+    <div class="room-header">
+      <div class="code-tag" id="roomCodeTag"></div>
+      <button class="btn danger" id="leaveBtn">Leave</button>
+    </div>
+
+    <div class="videos">
+      <div class="video-box" id="localBox">
+        <video id="localVideo" autoplay playsinline muted></video>
+        <div class="label" id="localLabel">You</div>
+      </div>
+      <div class="video-box empty" id="remoteBox">
+        <video id="remoteVideo" autoplay playsinline class="hidden"></video>
+        <div class="placeholder" id="remotePlaceholder">Waiting for video</div>
+        <div class="label hidden" id="remoteLabel">Them</div>
+      </div>
+    </div>
+
+    <div class="call-controls">
+      <button class="btn icon" id="micBtn" title="Toggle microphone">Mic: off</button>
+      <button class="btn icon" id="camBtn" title="Toggle camera">Camera: off</button>
+      <button class="btn icon" id="screenBtn" title="Share your screen">Share screen</button>
+      <button class="btn icon" id="fileBtn" title="Send a file">Send file</button>
+      <input type="file" id="fileInput" class="hidden">
+    </div>
+    <div class="status" id="callStatus"></div>
+    <div class="progress-track hidden" id="fileProgressTrack"><div class="progress-fill" id="fileProgressFill"></div></div>
+
+    <div class="chat-log" id="chatLog"></div>
+    <div class="chat-input-row">
+      <input type="text" id="chatInput" placeholder="Write a message">
+      <button class="btn primary" id="chatSendBtn">Send</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  const WORDS = ["amber","fox","quartz","delta","harbor","ember","north","cinder","willow","zephyr","onyx","raven","cobalt","juniper","tundra","ash","vapor","granite","lumen","echo"];
+  function genCode(){
+    const pick = () => WORDS[Math.floor(Math.random()*WORDS.length)];
+    const num = Math.floor(Math.random()*9)+1;
+    return `${pick()}-${num}-${pick()}-${pick()}`;
+  }
+  function codeToPeerId(code){
+    return "wireline-" + code.trim().toLowerCase().replace(/[^a-z0-9-]/g,"");
+  }
+  function setStatus(el, text, mode){
+    el.textContent = text;
+    el.classList.remove("ok","err");
+    if(mode) el.classList.add(mode);
+  }
+  function humanSize(bytes){
+    if(bytes < 1024) return bytes + " B";
+    if(bytes < 1024*1024) return (bytes/1024).toFixed(1) + " KB";
+    if(bytes < 1024*1024*1024) return (bytes/1024/1024).toFixed(1) + " MB";
+    return (bytes/1024/1024/1024).toFixed(2) + " GB";
+  }
+
+  // ---------- landing tabs ----------
+  const tabStart = document.getElementById("tabStart");
+  const tabJoin = document.getElementById("tabJoin");
+  const startPanel = document.getElementById("startPanel");
+  const joinPanel = document.getElementById("joinPanel");
+  tabStart.addEventListener("click", () => {
+    tabStart.classList.add("active"); tabStart.setAttribute("aria-selected","true");
+    tabJoin.classList.remove("active"); tabJoin.setAttribute("aria-selected","false");
+    startPanel.classList.remove("hidden"); joinPanel.classList.add("hidden");
+  });
+  tabJoin.addEventListener("click", () => {
+    tabJoin.classList.add("active"); tabJoin.setAttribute("aria-selected","true");
+    tabStart.classList.remove("active"); tabStart.setAttribute("aria-selected","false");
+    joinPanel.classList.remove("hidden"); startPanel.classList.add("hidden");
+  });
+
+  // ---------- shared state ----------
+  let myPeer = null;
+  let dataConn = null;
+  let mediaConn = null;
+  let localStream = null;   // camera/mic stream (may have disabled tracks)
+  let screenStream = null;
+  let myName = "You";
+  let theirName = "Them";
+  const CHUNK_SIZE = 16 * 1024;
+
+  const landing = document.getElementById("landing");
+  const roomView = document.getElementById("roomView");
+  const roomCodeTag = document.getElementById("roomCodeTag");
+  const localVideo = document.getElementById("localVideo");
+  const remoteVideo = document.getElementById("remoteVideo");
+  const remotePlaceholder = document.getElementById("remotePlaceholder");
+  const remoteLabel = document.getElementById("remoteLabel");
+  const localLabel = document.getElementById("localLabel");
+  const micBtn = document.getElementById("micBtn");
+  const camBtn = document.getElementById("camBtn");
+  const screenBtn = document.getElementById("screenBtn");
+  const fileBtn = document.getElementById("fileBtn");
+  const fileInput = document.getElementById("fileInput");
+  const callStatus = document.getElementById("callStatus");
+  const fileProgressTrack = document.getElementById("fileProgressTrack");
+  const fileProgressFill = document.getElementById("fileProgressFill");
+  const chatLog = document.getElementById("chatLog");
+  const chatInput = document.getElementById("chatInput");
+  const chatSendBtn = document.getElementById("chatSendBtn");
+  const leaveBtn = document.getElementById("leaveBtn");
+
+  function enterRoom(code){
+    landing.style.display = "none";
+    roomView.classList.add("open");
+    roomCodeTag.textContent = code;
+    localLabel.textContent = myName;
+  }
+
+  function addMsg(text, kind){
+    const div = document.createElement("div");
+    div.className = "msg " + kind;
+    div.textContent = text;
+    chatLog.appendChild(div);
+    chatLog.scrollTop = chatLog.scrollHeight;
+  }
+
+  function addFileMsg(name, url, kind, sizeLabel){
+    const div = document.createElement("div");
+    div.className = "msg " + kind;
+    const chip = document.createElement("div");
+    chip.className = "file-chip";
+    const label = document.createElement("span");
+    label.textContent = "📎";
+    chip.appendChild(label);
+    if(url){
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.textContent = name;
+      chip.appendChild(a);
+    } else {
+      const span = document.createElement("span");
+      span.textContent = name;
+      chip.appendChild(span);
+    }
+    if(sizeLabel){
+      const size = document.createElement("span");
+      size.style.opacity = "0.75";
+      size.style.fontSize = "12px";
+      size.textContent = sizeLabel;
+      chip.appendChild(size);
+    }
+    div.appendChild(chip);
+    chatLog.appendChild(div);
+    chatLog.scrollTop = chatLog.scrollHeight;
+  }
+
+  // ---------- data channel wiring (chat + file transfer) ----------
+  let incomingFile = null;
+
+  function wireDataConn(conn){
+    dataConn = conn;
+    conn.on("open", () => {
+      setStatus(callStatus, "Connected", "ok");
+      addMsg(`${theirName} joined`, "system");
+      conn.send({ type: "hello", name: myName });
+    });
+    conn.on("data", handleData);
+    conn.on("close", () => {
+      setStatus(callStatus, "They left the room", "err");
+      addMsg(`${theirName} left`, "system");
+      remoteVideo.classList.add("hidden");
+      remotePlaceholder.classList.remove("hidden");
+      remoteLabel.classList.add("hidden");
+    });
+  }
+
+  function handleData(msg){
+    if(msg.type === "hello"){
+      theirName = msg.name || "Them";
+      remoteLabel.textContent = theirName;
+    } else if(msg.type === "chat"){
+      addMsg(msg.text, "them");
+    } else if(msg.type === "file-meta"){
+      incomingFile = { name: msg.name, size: msg.size, mime: msg.mime, chunks: [], received: 0 };
+      fileProgressTrack.classList.remove("hidden");
+    } else if(msg.type === "file-chunk"){
+      if(!incomingFile) return;
+      incomingFile.chunks.push(msg.data);
+      incomingFile.received += msg.data.byteLength || msg.data.length || 0;
+      const pct = incomingFile.size ? Math.min(100, incomingFile.received/incomingFile.size*100) : 0;
+      fileProgressFill.style.width = pct.toFixed(1) + "%";
+    } else if(msg.type === "file-done"){
+      if(!incomingFile) return;
+      const blob = new Blob(incomingFile.chunks, { type: incomingFile.mime || "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      addFileMsg(incomingFile.name, url, "them", humanSize(incomingFile.size));
+      fileProgressTrack.classList.add("hidden");
+      fileProgressFill.style.width = "0%";
+      incomingFile = null;
+    }
+  }
+
+  chatSendBtn.addEventListener("click", sendChat);
+  chatInput.addEventListener("keydown", (e) => { if(e.key === "Enter") sendChat(); });
+  function sendChat(){
+    const text = chatInput.value.trim();
+    if(!text || !dataConn || !dataConn.open) return;
+    dataConn.send({ type: "chat", text });
+    addMsg(text, "me");
+    chatInput.value = "";
+  }
+
+  fileBtn.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", (e) => {
+    if(e.target.files.length) sendFileOverData(e.target.files[0]);
+  });
+
+  function sendFileOverData(file){
+    if(!dataConn || !dataConn.open){ setStatus(callStatus, "Not connected yet.", "err"); return; }
+    dataConn.send({ type: "file-meta", name: file.name, size: file.size, mime: file.type });
+    addFileMsg(file.name, null, "me", humanSize(file.size));
+    fileProgressTrack.classList.remove("hidden");
+
+    const reader = file.stream().getReader();
+    let sent = 0;
+    function pump(){
+      reader.read().then(({done, value}) => {
+        if(done){
+          dataConn.send({ type: "file-done" });
+          fileProgressTrack.classList.add("hidden");
+          fileProgressFill.style.width = "0%";
+          return;
+        }
+        let offset = 0;
+        function sendSlice(){
+          if(offset >= value.length){ pump(); return; }
+          const slice = value.slice(offset, offset + CHUNK_SIZE);
+          dataConn.send({ type: "file-chunk", data: slice });
+          sent += slice.length;
+          fileProgressFill.style.width = Math.min(100, (sent/file.size*100)).toFixed(1) + "%";
+          offset += CHUNK_SIZE;
+          if(dataConn.dataChannel && dataConn.dataChannel.bufferedAmount > 8 * CHUNK_SIZE){
+            setTimeout(sendSlice, 20);
+          } else {
+            sendSlice();
+          }
+        }
+        sendSlice();
+      });
+    }
+    pump();
+  }
+
+  // ---------- media (camera / mic) ----------
+  async function ensureLocalStream(){
+    if(localStream) return localStream;
+    localStream = new MediaStream();
+    localVideo.srcObject = localStream;
+    return localStream;
+  }
+
+  async function callPeerIfPossible(){
+    if(!myPeer) return;
+    const targetId = codeToPeerId(roomCodeTag.textContent);
+    if(mediaConn) return; // already have a call up
+    if(!localStream || localStream.getTracks().length === 0) return;
+    mediaConn = myPeer.call(targetId, localStream);
+    wireMediaConn(mediaConn);
+  }
+
+  function wireMediaConn(conn){
+    conn.on("stream", (remoteStream) => {
+      remoteVideo.srcObject = remoteStream;
+      remoteVideo.classList.remove("hidden");
+      remotePlaceholder.classList.add("hidden");
+      remoteLabel.classList.remove("hidden");
+    });
+    conn.on("close", () => {
+      remoteVideo.classList.add("hidden");
+      remotePlaceholder.classList.remove("hidden");
+      remoteLabel.classList.add("hidden");
+    });
+  }
+
+  let micOn = false, camOn = false, sharingScreen = false;
+
+  micBtn.addEventListener("click", async () => {
+    await ensureLocalStream();
+    if(!micOn){
+      try{
+        const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+        s.getAudioTracks().forEach(t => localStream.addTrack(t));
+        localVideo.srcObject = localStream;
+        micOn = true;
+        micBtn.textContent = "Mic: on";
+        micBtn.classList.add("active-toggle");
+        maybeUpdateOutgoingCall();
+        if(!mediaConn) callPeerIfPossible();
+      }catch(e){
+        setStatus(callStatus, "Couldn't access your microphone.", "err");
+      }
+    } else {
+      localStream.getAudioTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
+      micOn = false;
+      micBtn.textContent = "Mic: off";
+      micBtn.classList.remove("active-toggle");
+      maybeUpdateOutgoingCall();
+    }
+  });
+
+  camBtn.addEventListener("click", async () => {
+    await ensureLocalStream();
+    if(!camOn){
+      try{
+        const s = await navigator.mediaDevices.getUserMedia({ video: true });
+        s.getVideoTracks().forEach(t => localStream.addTrack(t));
+        localVideo.srcObject = localStream;
+        camOn = true;
+        camBtn.textContent = "Camera: on";
+        camBtn.classList.add("active-toggle");
+        maybeUpdateOutgoingCall();
+        if(!mediaConn) callPeerIfPossible();
+      }catch(e){
+        setStatus(callStatus, "Couldn't access your camera.", "err");
+      }
+    } else {
+      localStream.getVideoTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
+      camOn = false;
+      camBtn.textContent = "Camera: off";
+      camBtn.classList.remove("active-toggle");
+      maybeUpdateOutgoingCall();
+    }
+  });
+
+  screenBtn.addEventListener("click", async () => {
+    if(!sharingScreen){
+      try{
+        screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        const track = screenStream.getVideoTracks()[0];
+        await ensureLocalStream();
+        localStream.getVideoTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
+        localStream.addTrack(track);
+        localVideo.srcObject = localStream;
+        sharingScreen = true;
+        screenBtn.textContent = "Stop sharing";
+        screenBtn.classList.add("active-toggle");
+        maybeUpdateOutgoingCall();
+        if(!mediaConn) callPeerIfPossible();
+        track.addEventListener("ended", stopScreenShare);
+      }catch(e){
+        // user cancelled the picker — ignore
+      }
+    } else {
+      stopScreenShare();
+    }
+  });
+
+  function stopScreenShare(){
+    if(screenStream){
+      screenStream.getTracks().forEach(t => t.stop());
+      screenStream = null;
+    }
+    if(localStream){
+      localStream.getVideoTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
+    }
+    sharingScreen = false;
+    screenBtn.textContent = "Share screen";
+    screenBtn.classList.remove("active-toggle");
+    camOn = false;
+    camBtn.textContent = "Camera: off";
+    camBtn.classList.remove("active-toggle");
+    maybeUpdateOutgoingCall();
+  }
+
+  function maybeUpdateOutgoingCall(){
+    // Renegotiate by replacing the outgoing call's tracks via a fresh call,
+    // since PeerJS MediaConnection doesn't expose renegotiation directly.
+    if(!mediaConn || !mediaConn.peerConnection) return;
+    const pc = mediaConn.peerConnection;
+    const senders = pc.getSenders();
+    localStream.getTracks().forEach(track => {
+      const sender = senders.find(s => s.track && s.track.kind === track.kind);
+      if(sender){
+        sender.replaceTrack(track);
+      }
+    });
+    // remove senders whose kind no longer has a live track
+    senders.forEach(sender => {
+      if(sender.track && !localStream.getTracks().some(t => t.kind === sender.track.kind && t.readyState === "live")){
+        try{ sender.replaceTrack(null); }catch(e){}
+      }
+    });
+  }
+
+  // ---------- start / join / leave ----------
+  const startName = document.getElementById("startName");
+  const startBtn = document.getElementById("startBtn");
+  const startCodeBlock = document.getElementById("startCodeBlock");
+  const startCode = document.getElementById("startCode");
+  const copyStartCode = document.getElementById("copyStartCode");
+  const startStatus = document.getElementById("startStatus");
+
+  startBtn.addEventListener("click", () => {
+    myName = startName.value.trim() || "You";
+    const code = genCode();
+    const peerId = codeToPeerId(code);
+    startBtn.disabled = true;
+    setStatus(startStatus, "Opening room…");
+
+    myPeer = new Peer(peerId, { debug: 0 });
+    myPeer.on("open", () => {
+      startCode.textContent = code;
+      startCodeBlock.classList.remove("hidden");
+      setStatus(startStatus, "Waiting for someone to join");
+    });
+    myPeer.on("error", (err) => {
+      if(err.type === "unavailable-id"){
+        myPeer.destroy();
+        startBtn.disabled = false;
+        startBtn.click();
+        return;
+      }
+      setStatus(startStatus, "Something went wrong: " + err.type, "err");
+      startBtn.disabled = false;
+    });
+    myPeer.on("connection", (conn) => {
+      wireDataConn(conn);
+      enterRoom(code);
+    });
+    myPeer.on("call", (call) => {
+      call.answer(localStream || new MediaStream());
+      mediaConn = call;
+      wireMediaConn(call);
+    });
+  });
+
+  copyStartCode.addEventListener("click", () => {
+    navigator.clipboard.writeText(startCode.textContent).then(() => {
+      const old = copyStartCode.textContent;
+      copyStartCode.textContent = "Copied";
+      setTimeout(() => copyStartCode.textContent = old, 1400);
+    });
+  });
+
+  const joinName = document.getElementById("joinName");
+  const joinCode = document.getElementById("joinCode");
+  const joinBtn = document.getElementById("joinBtn");
+  const joinStatus = document.getElementById("joinStatus");
+
+  joinBtn.addEventListener("click", () => {
+    const raw = joinCode.value.trim();
+    if(!raw){ setStatus(joinStatus, "Type in a code first.", "err"); return; }
+    myName = joinName.value.trim() || "You";
+    const peerId = codeToPeerId(raw);
+
+    joinBtn.disabled = true;
+    setStatus(joinStatus, "Connecting…");
+
+    myPeer = new Peer(undefined, { debug: 0 });
+    myPeer.on("open", () => {
+      const conn = myPeer.connect(peerId, { reliable: true });
+      wireDataConn(conn);
+      conn.on("open", () => enterRoom(raw));
+    });
+    myPeer.on("error", (err) => {
+      if(err.type === "peer-unavailable"){
+        setStatus(joinStatus, "No room is open with that code.", "err");
+      } else {
+        setStatus(joinStatus, "Something went wrong: " + err.type, "err");
+      }
+      joinBtn.disabled = false;
+    });
+    myPeer.on("call", (call) => {
+      call.answer(localStream || new MediaStream());
+      mediaConn = call;
+      wireMediaConn(call);
+    });
+  });
+
+  leaveBtn.addEventListener("click", () => {
+    if(confirm("Leave the room?")){
+      location.reload();
+    }
+  });
+
+})();
+</script>
+</body>
+</html>
