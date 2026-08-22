@@ -702,7 +702,7 @@
   let localStream = null;
   let screenStream = null;
   let myName = "You";
-  const CHUNK_SIZE = 32 * 1024; // Smaller chunks are friendlier to slower WebRTC connections
+  const CHUNK_SIZE = 64 * 1024; // Smaller chunks are friendlier to slower WebRTC connections
   let fileIdCounter = 0;
   let incomingFiles = new Map(); // `${peerId}:${fileId}` -> {name,size,mime,chunks,received,senderName,refs}
   let chatHistory = []; // {senderName, text} — replayed to peers who join later
@@ -1480,6 +1480,58 @@
       btn.style.color = "";
       btn.style.borderColor = "";
     }, 1400);
+  }
+
+  // ---------- media tile lifecycle ----------
+  // Keep exactly one tile per peer. A tile may exist before its remote video
+  // arrives; the avatar/icon remains visible until a valid stream is attached.
+  function ensureMediaTile(peerId, name){
+    let tile = document.querySelector(`[data-peer-id="${CSS.escape(peerId)}"]`);
+    if(tile) return tile;
+
+    tile = document.createElement("div");
+    tile.className = "video-tile";
+    tile.dataset.peerId = peerId;
+    tile.innerHTML = `
+      <div class="remote-video-wrap">
+        <video class="remote-video" autoplay playsinline></video>
+        <div class="remote-placeholder" aria-hidden="true">
+          <svg data-lucide="user" class="icon"></svg>
+        </div>
+      </div>
+      <div class="video-name"></div>
+    `;
+    tile.querySelector(".video-name").textContent = name || "Guest";
+    const grid = document.getElementById("videoGrid");
+    if(grid) grid.appendChild(tile);
+    icons();
+    return tile;
+  }
+
+  function removeMediaTile(peerId){
+    document.querySelectorAll(`[data-peer-id="${CSS.escape(peerId)}"]`).forEach(el => el.remove());
+  }
+
+  function removePeerCompletely(peerId){
+    const p = peers && peers[peerId];
+    if(p){
+      try{ if(p.mediaConn) p.mediaConn.close(); }catch(e){}
+      try{ if(p.dataConn) p.dataConn.close(); }catch(e){}
+      delete peers[peerId];
+    }
+    removeMediaTile(peerId);
+  }
+
+  function attachRemoteStream(peerId, stream){
+    const tile = ensureMediaTile(peerId, (peers[peerId] && peers[peerId].name) || "Guest");
+    const video = tile.querySelector("video");
+    const placeholder = tile.querySelector(".remote-placeholder");
+    if(video){
+      if(video.srcObject !== stream) video.srcObject = stream;
+      video.muted = false;
+      video.play().catch(() => {});
+    }
+    if(placeholder) placeholder.style.display = "none";
   }
 
   // Shared incoming-call handler for both host and guest peers.
