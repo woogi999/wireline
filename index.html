@@ -588,7 +588,7 @@
           <button class="btn" id="camBtn" title="Toggle camera"><svg data-lucide="video-off" class="icon" id="camIcon"></svg><span class="label-text">Camera</span></button>
           <button class="btn" id="screenBtn" title="Share your screen"><svg data-lucide="monitor-up" class="icon" id="screenIcon"></svg><span class="label-text">Share screen</span></button>
           <button class="btn" id="fileBtn" title="Send a file"><svg data-lucide="paperclip" class="icon"></svg><span class="label-text">Send file</span></button>
-          <input type="file" id="fileInput" class="hidden" multiple>
+          <input type="file" id="fileInput" class="hidden" multiple webkitdirectory directory>
         </div>
         <div class="status" id="callStatus"></div>
       </aside>
@@ -969,8 +969,10 @@
 
         conn.send({ type: "roster", peers: roster });
 
-        // Replay everything the host said before this person joined.
-        if(chatHistory.length) conn.send({ type: "history", items: chatHistory });
+        // History is requested explicitly by the newcomer after entering the room.
+        // This avoids a race where the history arrives while the guest is still
+        // transitioning into the room UI.
+
       }
     });
 
@@ -1108,9 +1110,22 @@
     handleFiles(files);
   });
 
-  // ---------- batching: multi-file sends, auto-zip for non-media files ----------
+  // ---------- batching: files + folders ----------
+  function hasFolderPaths(files){
+    return files.some(f => f.webkitRelativePath && f.webkitRelativePath.includes("/"));
+  }
+
   function handleFiles(files){
     if(!files || !files.length) return;
+
+    // A directory selection (or a dragged folder) must stay a directory.
+    // Always package it into a ZIP while preserving every relative path.
+    if(hasFolderPaths(files)){
+      zipFiles(files, true).then(zipFile => sendFileToAll(zipFile)).catch(() => {
+        setStatus(callStatus, "Couldn't package that folder.", "err");
+      });
+      return;
+    }
 
     if(files.length === 1){
       sendFileToAll(files[0]);
@@ -1120,41 +1135,53 @@
     const mediaFiles = files.filter(f => isImage(f.type, f.name) || isVideo(f.type, f.name));
     const otherFiles = files.filter(f => !(isImage(f.type, f.name) || isVideo(f.type, f.name)));
 
-    // Images and videos keep their individual previews, so send those as-is —
-    // and every transfer below carries its own id, so they can all start
-    // sending in parallel instead of waiting on each other.
     mediaFiles.forEach(f => sendFileToAll(f));
 
     if(otherFiles.length === 1){
       sendFileToAll(otherFiles[0]);
     } else if(otherFiles.length > 1){
-      zipFiles(otherFiles).then(zipFile => sendFileToAll(zipFile)).catch(() => {
+      zipFiles(otherFiles, false).then(zipFile => sendFileToAll(zipFile)).catch(() => {
         setStatus(callStatus, "Couldn't zip those files — sending separately.", "err");
         otherFiles.forEach(f => sendFileToAll(f));
       });
     }
   }
 
-  function zipFiles(files){
+  function zipFiles(files, preservePaths){
     if(!window.JSZip){
       return Promise.reject(new Error("JSZip not available"));
     }
     const zip = new JSZip();
     const usedNames = new Set();
     files.forEach(f => {
-      let name = f.name || "file";
-      let i = 1;
-      while(usedNames.has(name)){
-        const dot = f.name.lastIndexOf(".");
-        name = dot > -1 ? `${f.name.slice(0,dot)} (${i})${f.name.slice(dot)}` : `${f.name} (${i})`;
-        i++;
+      // webkitRelativePath is populated when a folder is selected with
+      // webkitdirectory, and is also available for folder drops in Chromium.
+      let name = preservePaths && f.webkitRelativePath ? f.webkitRelativePath : (f.name || "file");
+      name = name.replace(/^\/+/, "").replace(/\\/g, "/");
+      if(!name) name = f.name || "file";
+
+      // For ordinary multi-file selection, keep the existing duplicate-name
+      // protection. Folder paths are already unique by their full path.
+      if(!preservePaths){
+        let candidate = name;
+        let i = 1;
+        while(usedNames.has(candidate)){
+          const dot = f.name.lastIndexOf(".");
+          candidate = dot > -1 ? `${f.name.slice(0,dot)} (${i})${f.name.slice(dot)}` : `${f.name} (${i})`;
+          i++;
+        }
+        name = candidate;
       }
       usedNames.add(name);
       zip.file(name, f);
     });
     return zip.generateAsync({ type: "blob", compression: "DEFLATE" }).then(blob => {
       const stamp = new Date().toISOString().replace(/[:.]/g,"-").slice(0,19);
-      return new File([blob], `files-${stamp}.zip`, { type: "application/zip" });
+      const folderName = preservePaths && files[0].webkitRelativePath
+        ? files[0].webkitRelativePath.split("/")[0]
+        : null;
+      const filename = folderName ? `${folderName}.zip` : `files-${stamp}.zip`;
+      return new File([blob], filename, { type: "application/zip" });
     });
   }
 
@@ -1634,6 +1661,8 @@
         enterRoom(code);
         setRoomUrl("guest", code);
         saveSession("guest", code, myName);
+        // Ask the host for the complete room history after the room UI is ready.
+        conn.send({ type: "history-request" });
       });
     });
     myPeer.on("error", (err) => {
