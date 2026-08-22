@@ -282,27 +282,23 @@
 
   .videos{display:flex; flex-wrap:wrap; gap:8px; min-width:0;}
   .videos > .video-box{flex:1 1 220px; min-width:180px; max-width:420px;}
-  .video-box.floating-video{
-    position:fixed !important;
-    z-index:1000 !important;
-    width:220px;
-    height:145px;
-    min-width:220px;
-    max-width:220px;
-    right:24px;
-    top:24px;
-    bottom:auto;
-    left:auto;
-    flex:none;
-    aspect-ratio:auto !important;
-    box-shadow:0 10px 30px rgba(0,0,0,.22);
-    cursor:grab;
-    user-select:none;
-}
-.video-box.floating-video video{width:100%;height:100%;}
-body > .video-box.floating-video{position:fixed !important;}
+  .floating-video{position:fixed !important; z-index:1000 !important; width:220px; height:145px; right:24px; top:24px; bottom:auto; aspect-ratio:auto !important; box-shadow:0 10px 30px rgba(0,0,0,.22); cursor:grab; user-select:none;}
   #stageLocalSlot > .video-box{width:220px; height:145px; min-width:220px; max-width:220px; flex:0 0 220px; aspect-ratio:auto;}
   .floating-video:active{cursor:grabbing;}
+  .floating-video .local-media-stack{position:absolute;inset:0;display:flex;gap:2px;background:#000;}
+  .floating-video .local-media-stack video{width:100%;height:100%;min-width:0;object-fit:contain;background:#000;}
+  .floating-video .local-screen-video{flex:1 1 50%;}
+  .floating-video .spotlight-video{position:absolute;inset:0;width:100% !important;height:100% !important;object-fit:contain;background:#000;z-index:2;}
+  .floating-video .local-screen-video:not(.hidden) + .spotlight-video{display:none;}
+  .stage-local .local-media-stack{position:relative;width:100%;height:100%;display:flex;gap:4px;background:#000;}
+  .stage-local .local-media-stack video{flex:1 1 50%;min-width:0;width:100%;height:100%;object-fit:contain;background:#000;}
+  .video-box.has-camera-and-screen{display:flex;flex-direction:column;}
+  .video-box .remote-media-stack{display:flex;gap:4px;width:100%;height:100%;background:#000;}
+  .video-box .remote-media-stack video{flex:1 1 50%;min-width:0;width:100%;height:100%;object-fit:contain;background:#000;}
+  .video-box .remote-media-stack.single video{flex-basis:100%;}
+  .video-box .remote-media-stack.screen-only video{flex-basis:100%;}
+  .video-box .remote-media-stack .remote-screen{background:#080808;}
+  .video-box .remote-placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#71717a;}
   .floating-grip{position:absolute; top:6px; left:50%; transform:translateX(-50%); padding:1px 8px; border-radius:10px; background:rgba(0,0,0,.35); color:#fff; opacity:.75; pointer-events:none;}
   .floating-grip svg{width:15px;height:15px;}
   .media-stage{display:none; flex:0 0 auto; border:1px solid var(--border); border-radius:12px; background:var(--panel); padding:8px; margin-bottom:10px; max-height:42vh; overflow:auto;}
@@ -562,7 +558,7 @@ body > .video-box.floating-video{position:fixed !important;}
     }
     .media-grid{flex-direction:column;}
     .media-grid .video-box{width:100%; max-width:none;}
-    .video-box.floating-video{width:180px;height:120px;min-width:180px;max-width:180px;right:12px;top:12px;bottom:auto;}
+    .floating-video{width:180px;height:120px;right:12px;top:12px;bottom:auto;}
     #stageLocalSlot > .video-box{width:180px;height:120px;min-width:180px;max-width:180px;flex-basis:180px;}
     .call-controls{flex-direction:row; flex-wrap:wrap; flex:1 1 100%;}
     .call-controls .btn{width:auto; flex:1;}
@@ -649,7 +645,11 @@ body > .video-box.floating-video{position:fixed !important;}
         </div>
 
         <div class="floating-video video-box" id="localBox" title="Click to expand • Drag to float">
-          <video id="localVideo" autoplay playsinline muted></video>
+          <div class="local-media-stack">
+            <video id="localVideo" autoplay playsinline muted></video>
+            <video id="localScreenVideo" class="local-screen-video hidden" autoplay playsinline muted></video>
+            <video id="spotlightVideo" class="spotlight-video hidden" autoplay playsinline muted></video>
+          </div>
           <div class="label" id="localLabel"><svg data-lucide="user"></svg>You</div>
           <div class="floating-grip"><svg data-lucide="grip-horizontal"></svg></div>
         </div>
@@ -778,7 +778,7 @@ body > .video-box.floating-video{position:fixed !important;}
   let myPeer = null;
   let myId = null;
   let isHost = false;
-  let peers = new Map(); // peerId -> { id, name, dataConn, mediaConn, tile, videoEl, placeholderEl, labelEl }
+  let peers = new Map(); // peerId -> peer state (data + separate camera/screen media calls)
   let localStream = null;
   let screenStream = null;
   let myName = "You";
@@ -865,13 +865,17 @@ body > .video-box.floating-video{position:fixed !important;}
     box.className = "video-box empty";
     box.dataset.peer = p.id;
     box.innerHTML = `
-      <video autoplay playsinline class="hidden"></video>
+      <div class="remote-media-stack single">
+        <video autoplay playsinline class="remote-camera hidden"></video>
+        <video autoplay playsinline class="remote-screen hidden"></video>
+      </div>
       <div class="placeholder"><svg data-lucide="video-off"></svg></div>
       <div class="label"><svg data-lucide="user"></svg>${escapeHtml(p.name)}</div>
     `;
     remoteVideosEl.appendChild(box);
     p.tile = box;
-    p.videoEl = box.querySelector("video");
+    p.videoEl = box.querySelector(".remote-camera");
+    p.screenEl = box.querySelector(".remote-screen");
     p.placeholderEl = box.querySelector(".placeholder");
     p.labelEl = box.querySelector(".label");
     icons();
@@ -880,7 +884,7 @@ body > .video-box.floating-video{position:fixed !important;}
   function getOrCreatePeer(id, name){
     let p = peers.get(id);
     if(!p){
-      p = { id, name: name || "Them", dataConn: null, mediaConn: null, dataConnToken: 0, mediaConnToken: 0, isHostConnection: false, authenticated: false, clientId: "", lastSeen: Date.now() };
+      p = { id, name: name || "Them", dataConn: null, mediaConn: null, cameraConn: null, screenConn: null, cameraStream: null, screenStream: null, audioContext: null, analyser: null, speaking: false, dataConnToken: 0, mediaConnToken: 0, isHostConnection: false, authenticated: false, clientId: "", lastSeen: Date.now() };
       peers.set(id, p);
       createPeerTile(p);
       if(isHost || p.isHostConnection) updateKnownMember(id, p.name, !!p.isHostConnection);
@@ -932,8 +936,8 @@ body > .video-box.floating-video{position:fixed !important;}
     const p = peers.get(id);
     if(!p) return;
 
-    if(p.mediaConn){ try{ p.mediaConn.close(); }catch(e){} }
-    if(p.videoEl) p.videoEl.srcObject = null;
+    stopRemoteMedia(p);
+    if(p.audioContext){ try{ p.audioContext.close(); }catch(e){} p.audioContext = null; }
     if(p.dataConn){ try{ p.dataConn.close(); }catch(e){} }
 
     if(p.tile) p.tile.remove();
@@ -959,39 +963,113 @@ body > .video-box.floating-video{position:fixed !important;}
     document.body.appendChild(modal);
   }
 
+  let spotlightPeerId = null;
+  let spotlightTimer = null;
+  let spotlightManualUntil = 0;
+  let localAudioContext = null;
+  let localAnalyser = null;
+  let localSpeaking = false;
+
+  function setupLocalSpeakingDetector(){
+    if(!localStream || !localStream.getAudioTracks().length) return;
+    try{
+      if(localAudioContext) localAudioContext.close().catch(()=>{});
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if(!AC) return;
+      const ctx = new AC();
+      const source = ctx.createMediaStreamSource(localStream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.72;
+      source.connect(analyser);
+      localAudioContext = ctx; localAnalyser = analyser;
+      const data = new Uint8Array(analyser.fftSize);
+      const tick = () => {
+        if(localAnalyser !== analyser) return;
+        analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for(let i=0;i<data.length;i++){ const v=(data[i]-128)/128; sum += v*v; }
+        const nextSpeaking = Math.sqrt(sum/data.length) > 0.045;
+        if(nextSpeaking !== localSpeaking){ localSpeaking = nextSpeaking; updateSpotlight(); }
+        requestAnimationFrame(tick);
+      };
+      tick();
+    }catch(e){}
+  }
+
+  function spotlightCandidates(){
+    const list = [...peers.values()].filter(p => p.cameraStream || p.screenStream);
+    if((camOn || screenStream) && (localStream?.getVideoTracks().length || screenStream)) {
+      list.unshift({ id:"__local__", name:myName, cameraStream:camOn ? localStream : null, screenStream, speaking:localSpeaking, isLocal:true });
+    }
+    return list;
+  }
+
+  function setSpotlight(p){
+    const video = document.getElementById("spotlightVideo");
+    const label = document.getElementById("localLabel");
+    if(!video || !p){
+      if(video) { video.pause(); video.srcObject = null; video.classList.add("hidden"); }
+      if(label) label.innerHTML = '<svg data-lucide="user"></svg>' + escapeHtml(myName);
+      icons();
+      return;
+    }
+    const stream = p.cameraStream || p.screenStream;
+    video.srcObject = stream;
+    video.classList.remove("hidden");
+    video.muted = true;
+    video.play().catch(()=>{});
+    spotlightPeerId = p.id;
+    if(label) label.innerHTML = '<svg data-lucide="user"></svg>' + escapeHtml(p.name || "Guest");
+    icons();
+  }
+
+  function updateSpotlight(){
+    const candidates = spotlightCandidates();
+    if(!candidates.length){ setSpotlight(null); return; }
+    const speakers = candidates.filter(p => p.speaking);
+    if(speakers.length){
+      speakers.sort((a,b) => (b.speaking ? 1:0) - (a.speaking ? 1:0));
+      setSpotlight(speakers[0]);
+      spotlightManualUntil = Date.now() + 1000;
+      return;
+    }
+    if(spotlightManualUntil > Date.now() && spotlightPeerId){
+      const current = peers.get(spotlightPeerId);
+      if(current && candidates.includes(current)) return;
+    }
+  }
+
+  function startSpotlightCycle(){
+    clearInterval(spotlightTimer);
+    spotlightTimer = setInterval(() => {
+      const candidates = spotlightCandidates();
+      if(!candidates.length){ setSpotlight(null); return; }
+      const speakers = candidates.filter(p => p.speaking);
+      if(speakers.length){ setSpotlight(speakers[0]); return; }
+      let idx = candidates.findIndex(p => p.id === spotlightPeerId);
+      idx = (idx + 1) % candidates.length;
+      setSpotlight(candidates[idx]);
+    }, 3000);
+  }
+  startSpotlightCycle();
+
   const localBox = document.getElementById("localBox");
   const mediaStage = document.getElementById("mediaStage");
   const mediaGrid = document.getElementById("mediaGrid");
   const stageLocalSlot = document.getElementById("stageLocalSlot");
   const collapseMedia = document.getElementById("collapseMedia");
   let mediaExpanded = false;
-  let draggingLocal = false;
-  let dragMoved = false;
-  let dragDX = 0;
-  let dragDY = 0;
-  let dragPointerId = null;
-
-  function makeFloatingAt(x, y){
-    // Move the element to <body> before applying fixed positioning. This
-    // guarantees it is positioned against the viewport, not the sidebar.
-    document.body.appendChild(localBox);
-    localBox.classList.add("floating-video");
-    localBox.style.right = "auto";
-    localBox.style.bottom = "auto";
-
-    const w = localBox.offsetWidth || 220;
-    const h = localBox.offsetHeight || 145;
-    const maxX = Math.max(8, window.innerWidth - w - 8);
-    const maxY = Math.max(8, window.innerHeight - h - 8);
-    localBox.style.left = Math.max(8, Math.min(maxX, x)) + "px";
-    localBox.style.top = Math.max(8, Math.min(maxY, y)) + "px";
-  }
+  let draggingLocal = false, dragMoved = false, dragDX = 0, dragDY = 0;
 
   function expandMedia(){
     mediaExpanded = true;
+    document.getElementById("spotlightVideo")?.classList.add("hidden");
+    localVideo.classList.remove("hidden");
     mediaStage.classList.add("open");
     stageLocalSlot.appendChild(localBox);
     localBox.classList.remove("floating-video");
+    // Keep the local camera exactly the same size when expanded.
     localBox.style.left = "";
     localBox.style.top = "";
     localBox.style.right = "";
@@ -999,91 +1077,62 @@ body > .video-box.floating-video{position:fixed !important;}
     remoteVideosEl.style.display = "flex";
     collapseMedia?.focus({preventScroll:true});
   }
-
   function collapseMediaView(){
     mediaExpanded = false;
+    updateSpotlight();
     mediaStage.classList.remove("open");
-
-    // Put it back in the body so fixed positioning is relative to the viewport.
     document.body.appendChild(localBox);
     localBox.classList.add("floating-video");
-
-    // Preserve a user-selected position. Otherwise use the default top-right.
-    if(!localBox.style.left || !localBox.style.top){
-      localBox.style.left = "auto";
-      localBox.style.top = "24px";
-      localBox.style.right = "24px";
+    // Return to the default top-right position unless the user has dragged it.
+    if(!localBox.style.left && !localBox.style.top){
+      localBox.style.right = "";
+      localBox.style.top = "";
     }
     localBox.style.bottom = "auto";
     remoteVideosEl.style.display = "none";
   }
-
   collapseMedia?.addEventListener("click", collapseMediaView);
-
   localBox.addEventListener("pointerdown", e => {
     draggingLocal = true;
     dragMoved = false;
-    dragPointerId = e.pointerId;
-
     const r = localBox.getBoundingClientRect();
-    dragDX = e.clientX - r.left;
-    dragDY = e.clientY - r.top;
-
+    dragDX = e.clientX-r.left;
+    dragDY = e.clientY-r.top;
     localBox.setPointerCapture?.(e.pointerId);
   });
-
   localBox.addEventListener("pointermove", e => {
-    if(!draggingLocal || e.pointerId !== dragPointerId) return;
+    if(!draggingLocal) return;
 
-    // Don't treat tiny pointer movement as a drag/click yet.
-    const current = localBox.getBoundingClientRect();
-    const movedX = Math.abs(e.clientX - (current.left + dragDX));
-    const movedY = Math.abs(e.clientY - (current.top + dragDY));
-    if(!dragMoved && movedX < 5 && movedY < 5) return;
-
-    dragMoved = true;
-
+    // A real drag while expanded turns the camera back into a floating camera.
     if(mediaExpanded){
-      // Capture the camera's current viewport position before reparenting.
       const r = localBox.getBoundingClientRect();
-      const x = e.clientX - dragDX;
-      const y = e.clientY - dragDY;
-
+      if(Math.abs(e.clientX-(r.left+dragDX)) < 4 && Math.abs(e.clientY-(r.top+dragDY)) < 4) return;
+      dragMoved = true;
+      const x = Math.max(8, Math.min(window.innerWidth-r.width-8, e.clientX-dragDX));
+      const y = Math.max(8, Math.min(window.innerHeight-r.height-8, e.clientY-dragDY));
       mediaExpanded = false;
       mediaStage.classList.remove("open");
-      makeFloatingAt(x, y);
+      document.body.appendChild(localBox);
+      localBox.classList.add("floating-video");
       remoteVideosEl.style.display = "none";
-
-      // Re-grab the pointer after moving the element from the stage to body.
-      localBox.setPointerCapture?.(e.pointerId);
+      localBox.style.left = x + "px";
+      localBox.style.top = y + "px";
+      localBox.style.right = "auto";
+      localBox.style.bottom = "auto";
       return;
     }
 
-    const w = localBox.offsetWidth;
-    const h = localBox.offsetHeight;
-    const x = Math.max(8, Math.min(window.innerWidth - w - 8, e.clientX - dragDX));
-    const y = Math.max(8, Math.min(window.innerHeight - h - 8, e.clientY - dragDY));
-
-    localBox.style.left = x + "px";
-    localBox.style.top = y + "px";
+    dragMoved = true;
+    localBox.style.left = Math.max(8, Math.min(window.innerWidth-localBox.offsetWidth-8, e.clientX-dragDX)) + "px";
+    localBox.style.top = Math.max(8, Math.min(window.innerHeight-localBox.offsetHeight-8, e.clientY-dragDY)) + "px";
     localBox.style.right = "auto";
     localBox.style.bottom = "auto";
   });
-
-  function finishLocalPointer(e){
-    if(!draggingLocal || e.pointerId !== dragPointerId) return;
-    draggingLocal = false;
-    dragPointerId = null;
-
-    try{ localBox.releasePointerCapture?.(e.pointerId); }catch(_){}
-
-    // A click while expanded does nothing; only an actual drag floats it.
-    // A click while floating expands it.
+  localBox.addEventListener("pointerup", e => {
+    if(!draggingLocal) return;
+    draggingLocal=false;
     if(!dragMoved && !mediaExpanded) expandMedia();
-  }
-
-  localBox.addEventListener("pointerup", finishLocalPointer);
-  localBox.addEventListener("pointercancel", finishLocalPointer);
+  });
 
 
   // Full GitHub-Flavored Markdown renderer. marked handles headings, emphasis,
@@ -1762,61 +1811,119 @@ body > .video-box.floating-video{position:fixed !important;}
     return localStream;
   }
 
-  // Media calls are kept separate from data connections. Only one active call
-  // is allowed per peer; stale call events cannot blank a newer video stream.
+  // Camera and screen are separate PeerJS media calls so both can arrive at once.
   function startMediaCall(peerId){
     const p = peers.get(peerId);
     if(!p || !myPeer) return;
-    if(!localStream || !localStream.getTracks().length) return;
 
-    if(p.mediaConn){
-      try{ p.mediaConn.close(); }catch(e){}
-    }
+    if(p.cameraConn){ try{ p.cameraConn.close(); }catch(e){} p.cameraConn = null; }
+    if(p.screenConn){ try{ p.screenConn.close(); }catch(e){} p.screenConn = null; }
 
     const token = ++p.mediaConnToken;
-    const call = myPeer.call(peerId, localStream);
-    p.mediaConn = call;
-    wireMediaConn(call, peerId, token);
+
+    // Camera call also carries microphone audio. It can be audio-only when the camera is off.
+    if(localStream && localStream.getTracks().length){
+      const call = myPeer.call(peerId, localStream, {metadata:{kind:"camera"}});
+      p.cameraConn = call;
+      wireMediaConn(call, peerId, token, "camera");
+    }
+
+    // Screen is deliberately a second call. This prevents screen sharing from replacing the camera.
+    if(screenStream && screenStream.getVideoTracks().length){
+      const call = myPeer.call(peerId, screenStream, {metadata:{kind:"screen"}});
+      p.screenConn = call;
+      wireMediaConn(call, peerId, token, "screen");
+    }
   }
 
   function refreshCallAll(){
     if(!myPeer) return;
-    peers.forEach((p, id) => {
-      if(localStream && localStream.getTracks().length > 0){
-        startMediaCall(id);
-      } else if(p.mediaConn){
-        try{ p.mediaConn.close(); }catch(e){}
-        p.mediaConn = null;
-        if(p.videoEl) p.videoEl.srcObject = null;
-        if(p.videoEl) p.videoEl.classList.add("hidden");
-        if(p.placeholderEl) p.placeholderEl.classList.remove("hidden");
-        if(p.labelEl) p.labelEl.classList.add("hidden");
-      }
-    });
+    peers.forEach((p, id) => startMediaCall(id));
   }
 
-  function wireMediaConn(conn, peerId, token){
+  function stopRemoteMedia(p){
+    if(!p) return;
+    try{ p.cameraConn?.close(); }catch(e){}
+    try{ p.screenConn?.close(); }catch(e){}
+    p.cameraConn = null; p.screenConn = null;
+    p.cameraStream = null; p.screenStream = null;
+    if(p.videoEl) p.videoEl.srcObject = null;
+    if(p.screenEl) p.screenEl.srcObject = null;
+    p.speaking = false;
+    updateRemoteTile(p);
+  }
+
+  function updateRemoteTile(p){
+    if(!p?.tile) return;
+    const cam = !!(p.cameraStream && p.cameraStream.getVideoTracks().length);
+    const scr = !!(p.screenStream && p.screenStream.getVideoTracks().length);
+    const stack = p.tile.querySelector(".remote-media-stack");
+    if(stack){
+      stack.classList.toggle("single", !(cam && scr));
+      stack.classList.toggle("screen-only", !cam && scr);
+    }
+    p.tile.classList.toggle("has-camera-and-screen", cam && scr);
+    p.tile.classList.toggle("empty", !cam && !scr);
+    if(p.placeholderEl) p.placeholderEl.style.display = (cam || scr) ? "none" : "flex";
+    if(p.videoEl) p.videoEl.classList.toggle("hidden", !cam);
+    if(p.screenEl) p.screenEl.classList.toggle("hidden", !scr);
+  }
+
+  function setupSpeakingDetector(p, stream){
+    if(!stream || !stream.getAudioTracks().length) return;
+    try{
+      if(p.audioContext) p.audioContext.close().catch(()=>{});
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if(!AC) return;
+      const ctx = new AC();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.72;
+      source.connect(analyser);
+      p.audioContext = ctx; p.analyser = analyser;
+      const data = new Uint8Array(analyser.fftSize);
+      const tick = () => {
+        if(!peers.has(p.id) || p.analyser !== analyser) return;
+        analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for(let i=0;i<data.length;i++){ const v=(data[i]-128)/128; sum += v*v; }
+        const rms = Math.sqrt(sum/data.length);
+        const nextSpeaking = rms > 0.045;
+        if(nextSpeaking !== p.speaking){ p.speaking = nextSpeaking; updateSpotlight(); }
+        p.tile?.classList.toggle("speaking", p.speaking);
+        requestAnimationFrame(tick);
+      };
+      tick();
+    }catch(e){}
+  }
+
+  function wireMediaConn(conn, peerId, token, kind){
     conn.on("stream", (remoteStream) => {
       const p = peers.get(peerId);
-      if(!p || p.mediaConn !== conn || (token && p.mediaConnToken !== token)) return;
-
-      p.videoEl.srcObject = remoteStream;
-      p.videoEl.classList.remove("hidden");
-      p.placeholderEl.classList.add("hidden");
-      p.labelEl.classList.remove("hidden");
+      if(!p) return;
+      if(kind === "screen") {
+        p.screenStream = remoteStream;
+        if(p.screenEl) { p.screenEl.srcObject = remoteStream; p.screenEl.play().catch(()=>{}); }
+      } else {
+        p.cameraStream = remoteStream;
+        if(p.videoEl) { p.videoEl.srcObject = remoteStream; p.videoEl.play().catch(()=>{}); }
+        setupSpeakingDetector(p, remoteStream);
+      }
+      updateRemoteTile(p);
+      updateSpotlight();
     });
 
     const clearIfCurrent = () => {
       const p = peers.get(peerId);
-      if(!p || p.mediaConn !== conn || (token && p.mediaConnToken !== token)) return;
-
-      p.mediaConn = null;
-      if(p.videoEl) p.videoEl.srcObject = null;
-      if(p.videoEl) p.videoEl.classList.add("hidden");
-      if(p.placeholderEl) p.placeholderEl.classList.remove("hidden");
-      if(p.labelEl) p.labelEl.classList.add("hidden");
+      if(!p) return;
+      if(kind === "screen" && p.screenConn !== conn) return;
+      if(kind === "camera" && p.cameraConn !== conn) return;
+      if(kind === "screen") { p.screenConn = null; p.screenStream = null; if(p.screenEl) p.screenEl.srcObject = null; }
+      else { p.cameraConn = null; p.cameraStream = null; if(p.videoEl) p.videoEl.srcObject = null; }
+      updateRemoteTile(p);
+      updateSpotlight();
     };
-
     conn.on("close", clearIfCurrent);
     conn.on("error", clearIfCurrent);
   }
@@ -1837,6 +1944,7 @@ body > .video-box.floating-video{position:fixed !important;}
         s.getAudioTracks().forEach(t => localStream.addTrack(t));
         localVideo.srcObject = localStream;
         micOn = true;
+        setupLocalSpeakingDetector();
         micBtn.classList.add("active-toggle");
         setIcon(document.getElementById("micIcon"), "mic");
         refreshCallAll();
@@ -1880,10 +1988,8 @@ body > .video-box.floating-video{position:fixed !important;}
       try{
         screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         const track = screenStream.getVideoTracks()[0];
-        await ensureLocalStream();
-        localStream.getVideoTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
-        localStream.addTrack(track);
-        localVideo.srcObject = localStream;
+        const localScreenVideo = document.getElementById("localScreenVideo");
+        if(localScreenVideo){ localScreenVideo.srcObject = screenStream; localScreenVideo.classList.remove("hidden"); localScreenVideo.play().catch(()=>{}); }
         sharingScreen = true;
         screenBtn.classList.add("active-toggle");
         setIcon(document.getElementById("screenIcon"), "monitor-x");
@@ -1902,9 +2008,8 @@ body > .video-box.floating-video{position:fixed !important;}
       screenStream.getTracks().forEach(t => t.stop());
       screenStream = null;
     }
-    if(localStream){
-      localStream.getVideoTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
-    }
+    const localScreenVideo = document.getElementById("localScreenVideo");
+    if(localScreenVideo){ localScreenVideo.srcObject = null; localScreenVideo.classList.add("hidden"); }
     sharingScreen = false;
     screenBtn.classList.remove("active-toggle");
     setIcon(document.getElementById("screenIcon"), "monitor-up");
@@ -2026,11 +2131,12 @@ body > .video-box.floating-video{position:fixed !important;}
   }
 
   function removePeerCompletely(peerId){
-    const p = peers && peers[peerId];
+    const p = peers?.get(peerId);
     if(p){
-      try{ if(p.mediaConn) p.mediaConn.close(); }catch(e){}
+      stopRemoteMedia(p);
+      try{ if(p.audioContext) p.audioContext.close(); }catch(e){}
       try{ if(p.dataConn) p.dataConn.close(); }catch(e){}
-      delete peers[peerId];
+      peers.delete(peerId);
     }
     removeMediaTile(peerId);
   }
@@ -2052,16 +2158,16 @@ body > .video-box.floating-video{position:fixed !important;}
     await ensureLocalStream();
     const id = call.peer;
     const p = getOrCreatePeer(id);
-
-    if(p.mediaConn){
-      try{ p.mediaConn.close(); }catch(e){}
-    }
-
-    const token = ++p.mediaConnToken;
-    p.mediaConn = call;
-    call.answer(localStream);
-    wireMediaConn(call, id, token);
+    const kind = call.metadata?.kind === "screen" ? "screen" : "camera";
+    const token = p.mediaConnToken;
+    if(kind === "screen" && p.screenConn){ try{ p.screenConn.close(); }catch(e){} }
+    if(kind === "camera" && p.cameraConn){ try{ p.cameraConn.close(); }catch(e){} }
+    if(kind === "screen") p.screenConn = call; else p.cameraConn = call;
+    // Answer with the matching local stream. Camera call carries mic; screen call is video-only.
+    call.answer(kind === "screen" ? (screenStream || new MediaStream()) : localStream);
+    wireMediaConn(call, id, token, kind);
   }
+
 
   function startRoom(code, name, isResume, password){
     myName = name || loadName() || "You";
@@ -2198,7 +2304,8 @@ body > .video-box.floating-video{position:fixed !important;}
   function kickBecauseHostLeft(){
     try{ myPeer?.destroy(); }catch(e){}
     peers.forEach(p => {
-      try{ if(p.mediaConn) p.mediaConn.close(); }catch(e){}
+      stopRemoteMedia(p);
+      try{ if(p.audioContext) p.audioContext.close(); }catch(e){}
       try{ if(p.dataConn) p.dataConn.close(); }catch(e){}
       if(p.tile) p.tile.remove();
     });
