@@ -397,6 +397,12 @@
     margin-bottom:3px;
     padding:0 4px;
   }
+  .msg-wrap.them + .msg-wrap.them{margin-top:-4px;}
+  .msg a{color:inherit; text-decoration:underline;}
+  .msg code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.92em; padding:1px 4px; border-radius:4px; background:rgba(127,127,127,.16);}
+  .msg blockquote{margin:4px 0; padding-left:9px; border-left:3px solid currentColor; opacity:.8;}
+  .msg ul{margin:4px 0 4px 18px; padding:0;}
+  .msg strong{font-weight:700;}
   .msg{
     max-width:100%;
     padding:9px 13px;
@@ -704,7 +710,7 @@
   let localStream = null;
   let screenStream = null;
   let myName = "You";
-  const CHUNK_SIZE = 64 * 1024; // Smaller chunks are friendlier to slower WebRTC connections
+  const CHUNK_SIZE = 256 * 1024; // Larger SCTP messages reduce per-chunk overhead while staying broadly compatible
   let fileIdCounter = 0;
   let incomingFiles = new Map(); // `${peerId}:${fileId}` -> {name,size,mime,chunks,received,senderName,refs}
   let chatHistory = []; // {senderName, text} — replayed to peers who join later
@@ -817,24 +823,48 @@
     if(localStream && localStream.getVideoTracks().length) openVideoModal(localStream, myName);
   });
 
-  // Builds the sender-tag + bubble wrapper shared by chat and file messages,
-  // with the name rendered above the bubble instead of inside it.
-  function buildMsgWrap(kind, senderName){
+  // Lightweight, safe Markdown renderer. We escape HTML first, then apply a
+  // deliberately small Markdown subset so messages can never inject HTML/JS.
+  function renderMarkdown(source){
+    let s = escapeHtml(String(source ?? ""));
+    s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+    s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
+    s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+    s = s.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>');
+    s = s.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
+    s = s.replace(/(^|\s)(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>');
+    s = s.replace(/^> (.*)$/gm, '<blockquote>$1</blockquote>');
+    s = s.replace(/^[-*] (.*)$/gm, '<li>$1</li>');
+    s = s.replace(/(?:<li>.*<\/li>\n?)+/g, m => '<ul>' + m + '</ul>');
+    return s.replace(/\n/g, '<br>');
+  }
+
+  // Messenger-style grouping: only the first consecutive incoming message
+  // from the same sender gets a name tag. A new sender starts a new group.
+  function buildMsgWrap(kind, senderName, senderId){
     const wrap = document.createElement("div");
     wrap.className = "msg-wrap " + kind;
-    // Show the sender name for every incoming message.
-    // The old `peers.size > 1` check prevented names from appearing
-    // in normal 1-to-1 chats and could also fail while history was loading.
+    wrap.dataset.senderId = senderId || senderName || "";
+
     if(kind === "them" && senderName){
-      const tag = document.createElement("div");
-      tag.className = "sender-tag";
-      tag.textContent = senderName;
-      wrap.appendChild(tag);
+      const previous = chatLog.lastElementChild;
+      const previousSameSender = previous &&
+        previous.classList.contains("msg-wrap") &&
+        previous.classList.contains("them") &&
+        previous.dataset.senderId === wrap.dataset.senderId;
+
+      if(!previousSameSender){
+        const tag = document.createElement("div");
+        tag.className = "sender-tag";
+        tag.textContent = senderName;
+        wrap.appendChild(tag);
+      }
     }
     return wrap;
   }
 
-  function addMsg(text, kind, senderName, skipHistory){
+  function addMsg(text, kind, senderName, skipHistory, senderId){
     if(kind === "system"){
       const div = document.createElement("div");
       div.className = "msg system";
@@ -843,16 +873,17 @@
       chatLog.scrollTop = chatLog.scrollHeight;
       return;
     }
-    const wrap = buildMsgWrap(kind, senderName);
+    const resolvedSender = senderName || (kind === "me" ? myName : "Them");
+    const wrap = buildMsgWrap(kind, resolvedSender, senderId);
     const div = document.createElement("div");
     div.className = "msg " + kind;
-    div.textContent = text;
+    div.innerHTML = renderMarkdown(text);
     wrap.appendChild(div);
     chatLog.appendChild(wrap);
     chatLog.scrollTop = chatLog.scrollHeight;
 
     if(!skipHistory){
-      chatHistory.push({ senderName: kind === "me" ? myName : (senderName || "Them"), text });
+      chatHistory.push({ senderName: resolvedSender, text });
     }
   }
 
@@ -907,8 +938,8 @@
   // Adds a file message with a progress bar at the top of the bubble.
   // `pending` shows the bar (upload/download in progress); returns refs so
   // the caller can update the fill and later swap in the finished content.
-  function addFileMsg(name, url, kind, sizeLabel, mime, senderName, pending){
-    const wrap = buildMsgWrap(kind, senderName);
+  function addFileMsg(name, url, kind, sizeLabel, mime, senderName, pending, senderId){
+    const wrap = buildMsgWrap(kind, senderName, senderId);
     const div = document.createElement("div");
     div.className = "msg " + kind;
 
@@ -1022,11 +1053,11 @@
         }
       });
     } else if(msg.type === "history"){
-      (msg.items || []).forEach(item => addMsg(item.text, "them", item.senderName, true));
+      (msg.items || []).forEach(item => addMsg(item.text, "them", item.senderName, true, fromId));
     } else if(msg.type === "chat"){
-      addMsg(msg.text, "them", p.name);
+      addMsg(msg.text, "them", p.name, false, fromId);
     } else if(msg.type === "file-meta"){
-      const refs = addFileMsg(msg.name, null, "them", humanSize(msg.size), msg.mime, p.name, true);
+      const refs = addFileMsg(msg.name, null, "them", humanSize(msg.size), msg.mime, p.name, true, fromId);
       incomingFiles.set(`${fromId}:${msg.id}`, { name: msg.name, size: msg.size, mime: msg.mime, chunks: [], received: 0, senderName: p.name, refs });
     } else if(msg.type === "file-chunk"){
       const key = `${fromId}:${msg.id}`;
@@ -1231,16 +1262,31 @@
   // room, instead of guessing with a setTimeout.
   function waitForDrain(dcs, threshold){
     return new Promise((resolve) => {
-      let pending = dcs.length;
-      if(!pending){ resolve(); return; }
-      dcs.forEach((dc) => {
+      const active = dcs.filter(dc => dc && dc.readyState === "open");
+      if(!active.length || active.every(dc => dc.bufferedAmount <= threshold)){
+        resolve();
+        return;
+      }
+
+      let pending = active.length;
+      const done = () => {
+        pending--;
+        if(pending <= 0) resolve();
+      };
+
+      active.forEach((dc) => {
         dc.bufferedAmountLowThreshold = threshold;
         const onLow = () => {
           dc.removeEventListener("bufferedamountlow", onLow);
-          pending--;
-          if(pending <= 0) resolve();
+          done();
         };
-        dc.addEventListener("bufferedamountlow", onLow);
+        dc.addEventListener("bufferedamountlow", onLow, { once: true });
+        // Prevent a race where the amount fell below the threshold before the
+        // event listener was installed.
+        if(dc.bufferedAmount <= threshold){
+          dc.removeEventListener("bufferedamountlow", onLow);
+          done();
+        }
       });
     });
   }
@@ -1287,8 +1333,8 @@
       file.name, url, "me", humanSize(file.size), file.type, null, true
     );
 
-    const BUFFER_LIMIT = 4 * 1024 * 1024;
-    const DRAIN_THRESHOLD = 1024 * 1024;
+    const BUFFER_LIMIT = 8 * 1024 * 1024;
+    const DRAIN_THRESHOLD = 2 * 1024 * 1024;
     const reader = file.stream().getReader();
     let sent = 0;
 
@@ -1304,7 +1350,7 @@
 
           // Send this same slice to every currently-open recipient.
           // The sender's progress is independent of the recipient UI.
-          const liveConns = conns.filter(c => c.open && c.dataChannel);
+          const liveConns = conns.filter(c => c.open && c.dataChannel && c.dataChannel.readyState === "open");
           liveConns.forEach(c => {
             try{
               c.send({
