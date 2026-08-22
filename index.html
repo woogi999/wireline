@@ -401,6 +401,9 @@
   .msg a{color:inherit; text-decoration:underline;}
   .msg code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.92em; padding:1px 4px; border-radius:4px; background:rgba(127,127,127,.16);}
   .msg blockquote{margin:4px 0; padding-left:9px; border-left:3px solid currentColor; opacity:.8;}
+  .msg pre{margin:6px 0; padding:8px 10px; overflow:auto; border-radius:6px; background:rgba(127,127,127,.14); white-space:pre-wrap;}
+  .msg pre code{padding:0; background:none;}
+  .msg del{text-decoration:line-through;}
   .msg ul{margin:4px 0 4px 18px; padding:0;}
   .msg strong{font-weight:700;}
   .msg{
@@ -537,9 +540,12 @@
     <section id="startPanel" class="panel">
       <label>Your name</label>
       <input type="text" id="startName" placeholder="e.g. Sam" maxlength="24">
+      <label style="margin-top:12px;">Room password <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
+      <input type="password" id="startPassword" placeholder="Leave blank for no password" maxlength="64" autocomplete="new-password">
       <button class="btn primary block" id="startBtn"><svg data-lucide="door-open" class="icon"></svg>Open room</button>
       <div id="startCodeBlock" class="hidden" style="margin-top:16px;">
         <label>Share this code</label>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">The Copy link button includes the room password automatically.</div>
         <div class="code-row">
           <div class="code" id="startCode">— — — —</div>
           <button class="btn" id="copyStartCode" title="Copy code"><svg data-lucide="copy" class="icon"></svg></button>
@@ -555,6 +561,8 @@
       <input type="text" id="joinName" placeholder="e.g. Alex" maxlength="24">
       <label style="margin-top:12px;">Room code</label>
       <input type="text" id="joinCode" placeholder="e.g. amber-7-fox-quartz" maxlength="40">
+      <label style="margin-top:12px;">Room password</label>
+      <input type="password" id="joinPassword" placeholder="Enter password if required" maxlength="64" autocomplete="current-password">
       <button class="btn primary block" id="joinBtn"><svg data-lucide="link" class="icon"></svg>Join room</button>
       <div class="status" id="joinStatus">Enter a code to join</div>
     </section>
@@ -710,6 +718,8 @@
   let localStream = null;
   let screenStream = null;
   let myName = "You";
+  let roomPassword = "";
+  let hostClosingRoom = false;
   const CHUNK_SIZE = 256 * 1024; // Larger SCTP messages reduce per-chunk overhead while staying broadly compatible
   let fileIdCounter = 0;
   let incomingFiles = new Map(); // `${peerId}:${fileId}` -> {name,size,mime,chunks,received,senderName,refs}
@@ -779,7 +789,7 @@
   function getOrCreatePeer(id, name){
     let p = peers.get(id);
     if(!p){
-      p = { id, name: name || "Them", dataConn: null, mediaConn: null, dataConnToken: 0, mediaConnToken: 0 };
+      p = { id, name: name || "Them", dataConn: null, mediaConn: null, dataConnToken: 0, mediaConnToken: 0, isHostConnection: false, authenticated: false };
       peers.set(id, p);
       createPeerTile(p);
     } else if(name && p.name !== name){
@@ -826,18 +836,43 @@
   // Lightweight, safe Markdown renderer. We escape HTML first, then apply a
   // deliberately small Markdown subset so messages can never inject HTML/JS.
   function renderMarkdown(source){
+    // Lightweight Markdown renderer: escape first, then allow only the
+    // formatting tags we explicitly generate. This keeps chat HTML-safe.
     let s = escapeHtml(String(source ?? ""));
+
+    // Fenced code blocks first so their contents are not reformatted.
+    const codeBlocks = [];
+    s = s.replace(/```(?:[a-zA-Z0-9_-]+)?\n?([\s\S]*?)```/g, (_, code) => {
+      const token = `\u0000CODE${codeBlocks.length}\u0000`;
+      codeBlocks.push(`<pre><code>${code}</code></pre>`);
+      return token;
+    });
+
+    // Inline code.
     s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+
+    // Markdown links. The URL was already HTML-escaped. Only http(s) links
+    // are generated, preventing javascript: URLs.
+    s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+
     s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
+    s = s.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
     s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
     s = s.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>');
-    s = s.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
-    s = s.replace(/(^|\s)(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>');
-    s = s.replace(/^> (.*)$/gm, '<blockquote>$1</blockquote>');
-    s = s.replace(/^[-*] (.*)$/gm, '<li>$1</li>');
-    s = s.replace(/(?:<li>.*<\/li>\n?)+/g, m => '<ul>' + m + '</ul>');
-    return s.replace(/\n/g, '<br>');
+
+    // Automatic links.
+    s = s.replace(/(^|[\s(])(https?:\/\/[^\s<]+)(?=$|[\s).,!?:;])/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>');
+
+    // Blockquotes and lists, line by line.
+    s = s.replace(/^> ?(.*)$/gm, '<blockquote>$1</blockquote>');
+    s = s.replace(/^[-*] +(.*)$/gm, '<li>$1</li>');
+    s = s.replace(/^\d+\. +(.*)$/gm, '<li>$1</li>');
+    s = s.replace(/(?:<li>.*<\/li>(?:\n|$))+/g, m => `<ul>${m}</ul>`);
+
+    s = s.replace(/\n/g, '<br>');
+    s = s.replace(/\u0000CODE(\d+)\u0000/g, (_, i) => codeBlocks[Number(i)]);
+    return s;
   }
 
   // Messenger-style grouping: only the first consecutive incoming message
@@ -997,31 +1032,22 @@
         return;
       }
       conn._wirelineConnecting = false;
-      conn.send({ type: "hello", name: myName });
+      conn.send({ type: "hello", name: myName, password: roomPassword });
       updateConnectionStatus();
-
-      if(isHost){
-        const roster = [...peers.values()]
-          .filter(other => other.id !== id && other.dataConn && other.dataConn.open)
-          .map(other => ({ id: other.id, name: other.name }));
-
-        conn.send({ type: "roster", peers: roster });
-
-        // History is requested explicitly by the newcomer after entering the room.
-        // This avoids a race where the history arrives while the guest is still
-        // transitioning into the room UI.
-
-      }
     });
 
     conn.on("data", (msg) => handleData(msg, id));
 
     const cleanupIfCurrent = () => {
       if(peers.get(id) !== p || p.dataConnToken !== token) return;
+      const wasHostConnection = p.isHostConnection;
       p.dataConn = null;
       conn._wirelineConnecting = false;
-      // A failed connection should not leave a stale video tile behind.
       removePeer(id, false);
+      if(!isHost && wasHostConnection && !hostClosingRoom){
+        hostClosingRoom = true;
+        kickBecauseHostLeft();
+      }
     };
 
     conn.on("close", cleanupIfCurrent);
@@ -1033,21 +1059,60 @@
     const p = peers.get(fromId);
     if(!p) return;
     if(msg.type === "hello"){
-      const isNew = p.name === "Them" || p.name !== msg.name;
-      p.name = msg.name || "Them";
-      if(p.labelEl) p.labelEl.innerHTML = '<svg data-lucide="user"></svg>' + escapeHtml(p.name);
-      icons();
-      if(isNew) addMsg(`${p.name} joined`, "system");
+      if(isHost){
+        if(String(msg.password || "") !== roomPassword){
+          try{ p.dataConn?.send({ type: "auth-fail" }); }catch(e){}
+          setTimeout(() => { try{ p.dataConn?.close(); }catch(e){} }, 20);
+          return;
+        }
+        p.authenticated = true;
+        p.name = msg.name || "Them";
+        if(p.labelEl) p.labelEl.innerHTML = '<svg data-lucide="user"></svg>' + escapeHtml(p.name);
+        icons();
+        try{ p.dataConn?.send({ type: "auth-ok", name: myName }); }catch(e){}
+        const roster = [...peers.values()]
+          .filter(other => other.id !== fromId && other.id !== myId && other.authenticated && other.dataConn && other.dataConn.open)
+          .map(other => ({ id: other.id, name: other.name }));
+        try{ p.dataConn?.send({ type: "roster", peers: roster }); }catch(e){}
+        addMsg(`${p.name} joined`, "system");
+      } else {
+        p.name = msg.name || "Host";
+        p.authenticated = true;
+        if(p.labelEl) p.labelEl.innerHTML = '<svg data-lucide="user"></svg>' + escapeHtml(p.name);
+        icons();
+      }
+    } else if(msg.type === "auth-ok"){
+      p.authenticated = true;
+      p.name = msg.name || "Host";
+      saveSession("guest", roomCodeTag.textContent, myName, roomPassword);
+      enterRoom(roomCodeTag.textContent);
+      setRoomUrl("guest", roomCodeTag.textContent);
+      try{ p.dataConn?.send({ type: "history-request" }); }catch(e){}
+    } else if(msg.type === "auth-fail"){
+      setStatus(joinStatus, "Incorrect room password.", "err");
+      try{ myPeer?.destroy(); }catch(e){}
+      clearSession();
+      clearRoomUrl();
+      roomView.classList.remove("open");
+      landing.style.display = "";
+      tabJoin.click();
+      joinBtn.disabled = false;
+      return;
+    } else if(msg.type === "host-left"){
+      kickBecauseHostLeft();
+      return;
+    } else if(msg.type === "history-request"){
+      if(isHost && p.authenticated){
+        try{ p.dataConn?.send({ type: "history", items: chatHistory }); }catch(e){}
+      }
     } else if(msg.type === "roster"){
+      if(!p.authenticated && !isHost) return;
       (msg.peers || []).forEach(entry => {
         if(entry.id === myId) return;
-
         const existing = peers.get(entry.id);
         if(existing && existing.dataConn) return;
-
         const conn2 = myPeer.connect(entry.id, { reliable: true });
         wireDataConn(conn2, entry.name);
-
         if(localStream && localStream.getTracks().length > 0){
           startMediaCall(entry.id);
         }
@@ -1576,8 +1641,8 @@
   }
 
 
-  function saveSession(role, code, name){
-    try{ sessionStorage.setItem(SESSION_KEY, JSON.stringify({ role, code, name })); }catch(e){}
+  function saveSession(role, code, name, password){
+    try{ sessionStorage.setItem(SESSION_KEY, JSON.stringify({ role, code, name, password: password || "" })); }catch(e){}
   }
   function clearSession(){
     try{ sessionStorage.removeItem(SESSION_KEY); }catch(e){}
@@ -1596,6 +1661,7 @@
     const url = new URL(location.href);
     url.search = "";
     url.searchParams.set("room", code);
+    if(roomPassword) url.searchParams.set("key", roomPassword);
     return url.toString();
   }
   function clearRoomUrl(){
@@ -1606,6 +1672,7 @@
 
   // ---------- start / join / leave ----------
   const startName = document.getElementById("startName");
+  const startPassword = document.getElementById("startPassword");
   const startBtn = document.getElementById("startBtn");
   const startCodeBlock = document.getElementById("startCodeBlock");
   const startCode = document.getElementById("startCode");
@@ -1614,6 +1681,7 @@
   const startStatus = document.getElementById("startStatus");
   const joinName = document.getElementById("joinName");
   const joinCode = document.getElementById("joinCode");
+  const joinPassword = document.getElementById("joinPassword");
   const joinBtn = document.getElementById("joinBtn");
   const joinStatus = document.getElementById("joinStatus");
 
@@ -1705,8 +1773,9 @@
     wireMediaConn(call, id, token);
   }
 
-  function startRoom(code, name, isResume){
+  function startRoom(code, name, isResume, password){
     myName = name || loadName() || "You";
+    roomPassword = password || "";
     saveName(myName);
     isHost = true;
     const peerId = codeToPeerId(code);
@@ -1723,7 +1792,7 @@
     myPeer.on("open", (id) => {
       myId = id;
       setRoomUrl("host", code);
-      saveSession("host", code, myName);
+      saveSession("host", code, myName, roomPassword);
       updateConnectionStatus();
     });
     myPeer.on("error", (err) => {
@@ -1739,7 +1808,7 @@
         }
         myPeer.destroy();
         startBtn.disabled = false;
-        startRoom(genCode(), name, false);
+        startRoom(genCode(), name, false, roomPassword);
         return;
       }
       setStatus(callStatus, "Something went wrong: " + err.type, "err");
@@ -1756,9 +1825,9 @@
   startBtn.addEventListener("click", () => {
     if(startName.value.trim()) saveName(startName.value.trim());
     if(resumeCode){
-      startRoom(resumeCode, startName.value.trim(), true);
+      startRoom(resumeCode, startName.value.trim(), true, startPassword.value);
     } else {
-      startRoom(genCode(), startName.value.trim(), false);
+      startRoom(genCode(), startName.value.trim(), false, startPassword.value);
     }
   });
 
@@ -1775,8 +1844,9 @@
     navigator.clipboard.writeText(shareableLink(roomCodeTag.textContent)).then(() => flashCopied(copyRoomLink));
   });
 
-  function joinRoom(code, name, isResume){
+  function joinRoom(code, name, isResume, password){
     myName = name || loadName() || "You";
+    roomPassword = password || "";
     saveName(myName);
     isHost = false;
     const peerId = codeToPeerId(code);
@@ -1788,12 +1858,11 @@
       myId = id;
       const conn = myPeer.connect(peerId, { reliable: true });
       wireDataConn(conn);
+      const hostPeer = peers.get(peerId);
+      if(hostPeer) hostPeer.isHostConnection = true;
       conn.on("open", () => {
-        enterRoom(code);
-        setRoomUrl("guest", code);
-        saveSession("guest", code, myName);
-        // Ask the host for the complete room history after the room UI is ready.
-        conn.send({ type: "history-request" });
+        // Authentication happens in the hello/auth-ok handshake.
+        setStatus(joinStatus, "Authenticating…");
       });
     });
     myPeer.on("error", (err) => {
@@ -1811,15 +1880,42 @@
     if(joinName.value.trim()) saveName(joinName.value.trim());
     const raw = joinCode.value.trim();
     if(!raw){ setStatus(joinStatus, "Type in a code first.", "err"); return; }
-    joinRoom(raw, joinName.value.trim(), false);
+    joinRoom(raw, joinName.value.trim(), false, joinPassword.value);
   });
 
+  function notifyRoomClosed(){
+    if(!isHost) return;
+    peers.forEach(p => {
+      if(p.dataConn && p.dataConn.open && p.authenticated){
+        try{ p.dataConn.send({ type: "host-left" }); }catch(e){}
+      }
+    });
+    hostClosingRoom = true;
+  }
+
+  function kickBecauseHostLeft(){
+    try{ myPeer?.destroy(); }catch(e){}
+    peers.forEach(p => {
+      try{ if(p.mediaConn) p.mediaConn.close(); }catch(e){}
+      try{ if(p.dataConn) p.dataConn.close(); }catch(e){}
+      if(p.tile) p.tile.remove();
+    });
+    peers.clear();
+    clearSession();
+    clearRoomUrl();
+    roomView.classList.remove("open");
+    landing.style.display = "";
+    setStatus(joinStatus, "The host closed the room.", "err");
+    tabJoin.click();
+  }
+
   leaveBtn.addEventListener("click", () => {
-    if(confirm("Leave the room?")){
-      clearSession();
-      clearRoomUrl();
-      location.reload();
-    }
+    if(!confirm(isHost ? "Close the room for everyone?" : "Leave the room?")) return;
+    if(isHost) notifyRoomClosed();
+    try{ myPeer?.destroy(); }catch(e){}
+    clearSession();
+    clearRoomUrl();
+    location.reload();
   });
 
   // ---------- resume on load ----------
@@ -1827,6 +1923,7 @@
     const params = new URLSearchParams(location.search);
     const urlRoom = params.get("room");
     const urlHost = params.get("host") === "1";
+    const urlPassword = params.get("key") || "";
     const session = loadSession();
 
     if(!urlRoom){
@@ -1835,10 +1932,11 @@
 
     // Prefer the session's remembered name; fall back to asking.
     const rememberedName = session && session.code === urlRoom ? session.name : null;
+    const rememberedPassword = session && session.code === urlRoom ? (session.password || "") : "";
 
     if(urlHost){
       if(rememberedName){
-        startRoom(urlRoom, rememberedName, true);
+        startRoom(urlRoom, rememberedName, true, rememberedPassword);
       } else {
         tabStart.click();
         resumeCode = urlRoom;
@@ -1850,9 +1948,10 @@
       }
     } else {
       joinCode.value = urlRoom;
+      joinPassword.value = urlPassword || rememberedPassword;
       tabJoin.click();
       if(rememberedName){
-        joinRoom(urlRoom, rememberedName, true);
+        joinRoom(urlRoom, rememberedName, true, urlPassword || rememberedPassword);
       } else {
         setStatus(joinStatus, "Enter your name to join this room", null, false);
       }
