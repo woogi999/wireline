@@ -1604,13 +1604,6 @@
     history.replaceState(null, "", url.toString());
   }
 
-  // Restore the last-used name so refreshes do not require re-entry.
-  const savedName = loadName();
-  if(savedName){
-    startName.value = savedName;
-    joinName.value = savedName;
-  }
-
   // ---------- start / join / leave ----------
   const startName = document.getElementById("startName");
   const startBtn = document.getElementById("startBtn");
@@ -1623,6 +1616,13 @@
   const joinCode = document.getElementById("joinCode");
   const joinBtn = document.getElementById("joinBtn");
   const joinStatus = document.getElementById("joinStatus");
+
+  // Restore the last-used name only after the input elements have been initialized.
+  const savedName = loadName();
+  if(savedName){
+    startName.value = savedName;
+    joinName.value = savedName;
+  }
 
   function flashCopied(btn){
     const icon = btn.querySelector("svg");
