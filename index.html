@@ -285,24 +285,30 @@
   .floating-video{position:fixed !important; z-index:1000 !important; width:220px !important; height:145px !important; min-width:220px !important; max-width:220px !important; min-height:145px !important; max-height:145px !important; flex:0 0 220px !important; right:24px; top:24px; bottom:auto; aspect-ratio:auto !important; box-sizing:border-box; overflow:hidden; box-shadow:0 10px 30px rgba(0,0,0,.22); cursor:grab; user-select:none;}
   #stageLocalSlot > .video-box{width:220px; height:145px; min-width:220px; max-width:220px; flex:0 0 220px; aspect-ratio:auto;}
   .floating-video:active{cursor:grabbing;}
-  .floating-video .local-media-stack{position:absolute;inset:0;display:flex;gap:2px;background:#000;}
-  .floating-video .local-media-stack video{width:100%;height:100%;min-width:0;object-fit:contain;background:#000;}
-  .floating-video .local-screen-video{flex:1 1 50%;}
-  .floating-video .spotlight-video{position:absolute;inset:0;width:100% !important;height:100% !important;object-fit:contain;background:#000;z-index:2;}
-  .floating-video .local-screen-video:not(.hidden) + .spotlight-video{display:none;}
-  .stage-local .local-media-stack{position:relative;width:100%;height:100%;display:flex;gap:4px;background:#000;}
-  .stage-local .local-media-stack video{flex:1 1 50%;min-width:0;width:100%;height:100%;object-fit:contain;background:#000;}
-  .video-box.has-camera-and-screen{display:flex;flex-direction:column;}
-  .video-box .remote-media-stack{display:flex;gap:4px;width:100%;height:100%;background:#000;}
-  .video-box .remote-media-stack video{flex:1 1 50%;min-width:0;width:100%;height:100%;object-fit:contain;background:#000;}
-  .video-box .remote-media-stack.single video{flex-basis:100%;}
-  .video-box .remote-media-stack.screen-only video{flex-basis:100%;}
-  .video-box .remote-media-stack .remote-screen{background:#080808;}
+
+
+
+
+
+
+
+
+
+
+
+
+
   .media-item{position:relative;flex:1 1 50%;min-width:0;height:100%;overflow:hidden;background:#000;}
   .media-item video{width:100%;height:100%;object-fit:contain;display:block;background:#000;}
-  .video-box .remote-media-stack .media-item video{flex:none;}
-  .video-box .remote-media-stack.single .media-item{flex-basis:100%;}
-  .video-box .remote-media-stack.screen-only .remote-camera-item{display:none;}
+  .remote-media-box{display:flex;flex-direction:column;min-height:0;}
+  .remote-media-box .media-item{flex:1;min-height:0;}
+  .local-screen-box{flex:1 1 220px;min-width:180px;max-width:420px;}
+  .local-screen-box.hidden{display:none !important;}
+  .floating-screen-share{display:none !important;}
+
+
+
+
   .media-fullscreen{position:absolute;top:8px;right:8px;width:30px;height:30px;border:0;border-radius:7px;background:rgba(0,0,0,.62);color:#fff;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;cursor:pointer;transition:opacity .15s,background .15s;z-index:5;}
   .media-item:hover .media-fullscreen,
   .media-item:focus-within .media-fullscreen,
@@ -651,25 +657,31 @@
           <button class="btn" id="copyRoomLink" title="Copy shareable link"><svg data-lucide="link-2" class="icon"></svg><span class="label-text">Copy link</span></button>
         </div>
 
+        <div class="room-password-display" id="roomPasswordDisplay">
+          <span class="password-label">Password</span>
+          <span class="password-value masked" id="roomPasswordValue">No password</span>
+          <button class="btn icon-only" id="toggleRoomPassword" type="button" title="Reveal password" aria-label="Reveal password"><svg data-lucide="eye" class="icon"></svg></button>
+        </div>
+
         <div class="members-panel" id="membersPanel">
           <div class="members-title">Members</div>
           <div id="membersList"></div>
         </div>
 
-        <div class="floating-video video-box" id="localBox" title="Click to expand • Drag to float">
-          <div class="local-media-stack">
-            <div class="media-item local-camera-item">
-              <video id="localVideo" autoplay playsinline muted></video>
-              <button class="media-fullscreen" id="localCameraFullscreen" type="button" title="Fullscreen camera" aria-label="Fullscreen camera"><svg data-lucide="maximize-2"></svg></button>
-            </div>
-            <div class="media-item local-screen-item">
-              <video id="localScreenVideo" class="local-screen-video hidden" autoplay playsinline muted></video>
-              <button class="media-fullscreen" id="localScreenFullscreen" type="button" title="Fullscreen screen share" aria-label="Fullscreen screen share"><svg data-lucide="maximize-2"></svg></button>
-            </div>
-            <video id="spotlightVideo" class="spotlight-video hidden" autoplay playsinline muted></video>
+        <div class="floating-video video-box" id="localBox" title="Click to anchor • Drag to move">
+          <div class="media-item local-camera-item">
+            <video id="localVideo" autoplay playsinline muted></video>
+            <button class="media-fullscreen" id="localCameraFullscreen" type="button" title="Fullscreen camera" aria-label="Fullscreen camera"><svg data-lucide="maximize-2"></svg></button>
           </div>
           <div class="label" id="localLabel"><svg data-lucide="user"></svg>You</div>
           <div class="floating-grip"><svg data-lucide="grip-horizontal"></svg></div>
+        </div>
+        <div class="video-box local-screen-box hidden" id="localScreenBox">
+          <div class="media-item">
+            <video id="localScreenVideo" autoplay playsinline muted></video>
+            <button class="media-fullscreen" id="localScreenFullscreen" type="button" title="Fullscreen screen share" aria-label="Fullscreen screen share"><svg data-lucide="maximize-2"></svg></button>
+          </div>
+          <div class="label"><svg data-lucide="monitor-up"></svg>My screen</div>
         </div>
 
         <div class="call-controls">
@@ -834,6 +846,9 @@
   const leaveBtn = document.getElementById("leaveBtn");
   const copyRoomCode = document.getElementById("copyRoomCode");
   const copyRoomLink = document.getElementById("copyRoomLink");
+  const roomPasswordDisplay = document.getElementById("roomPasswordDisplay");
+  const roomPasswordValue = document.getElementById("roomPasswordValue");
+  const toggleRoomPassword = document.getElementById("toggleRoomPassword");
   remoteVideosEl.style.display = "none";
 
   function escapeHtml(s){
@@ -866,6 +881,18 @@
     landing.style.display = "none";
     roomView.classList.add("open");
     roomCodeTag.textContent = code;
+
+    if(roomPasswordValue){
+      roomPasswordValue.dataset.password = roomPassword || "";
+      roomPasswordValue.textContent = roomPassword ? "••••••••" : "No password";
+      roomPasswordValue.classList.toggle("masked", !!roomPassword);
+    }
+    if(toggleRoomPassword){
+      toggleRoomPassword.disabled = !roomPassword;
+      toggleRoomPassword.setAttribute("title", roomPassword ? "Reveal password" : "No password");
+      toggleRoomPassword.setAttribute("aria-label", roomPassword ? "Reveal password" : "No password");
+    }
+
     localLabel.innerHTML = '<svg data-lucide="user"></svg>' + escapeHtml(myName);
     icons();
   }
@@ -897,29 +924,45 @@
   }
 
   function createPeerTile(p){
-    const box = document.createElement("div");
-    box.className = "video-box empty";
-    box.dataset.peer = p.id;
-    box.innerHTML = `
-      <div class="remote-media-stack single">
-        <div class="media-item remote-camera-item">
-          <video autoplay playsinline class="remote-camera hidden"></video>
-          <button class="media-fullscreen" type="button" title="Fullscreen camera" aria-label="Fullscreen camera"><svg data-lucide="maximize-2"></svg></button>
-        </div>
-        <div class="media-item remote-screen-item">
-          <video autoplay playsinline class="remote-screen hidden"></video>
-          <button class="media-fullscreen" type="button" title="Fullscreen screen share" aria-label="Fullscreen screen share"><svg data-lucide="maximize-2"></svg></button>
-        </div>
+    // Camera and screen share are separate containers, never a 2-in-1 tile.
+    const cameraBox = document.createElement("div");
+    cameraBox.className = "video-box remote-media-box empty";
+    cameraBox.dataset.peer = p.id;
+    cameraBox.dataset.mediaKind = "camera";
+    cameraBox.innerHTML = `
+      <div class="media-item">
+        <video autoplay playsinline class="remote-camera hidden"></video>
+        <button class="media-fullscreen" type="button" title="Fullscreen camera" aria-label="Fullscreen camera"><svg data-lucide="maximize-2"></svg></button>
       </div>
       <div class="placeholder"><svg data-lucide="video-off"></svg></div>
-      <div class="label"><svg data-lucide="user"></svg>${escapeHtml(p.name)}</div>
+      <div class="label"><svg data-lucide="user"></svg>${escapeHtml(p.name || "Guest")}</div>
     `;
-    remoteVideosEl.appendChild(box);
-    p.tile = box;
-    p.videoEl = box.querySelector(".remote-camera");
-    p.screenEl = box.querySelector(".remote-screen");
-    p.placeholderEl = box.querySelector(".placeholder");
-    p.labelEl = box.querySelector(".label");
+
+    const screenBox = document.createElement("div");
+    screenBox.className = "video-box remote-media-box hidden";
+    screenBox.dataset.peer = p.id;
+    screenBox.dataset.mediaKind = "screen";
+    screenBox.innerHTML = `
+      <div class="media-item">
+        <video autoplay playsinline class="remote-screen"></video>
+        <button class="media-fullscreen" type="button" title="Fullscreen screen share" aria-label="Fullscreen screen share"><svg data-lucide="maximize-2"></svg></button>
+      </div>
+      <div class="placeholder"><svg data-lucide="monitor-off"></svg></div>
+      <div class="label"><svg data-lucide="monitor-up"></svg>${escapeHtml(p.name || "Guest")} — Screen</div>
+    `;
+
+    remoteVideosEl.appendChild(cameraBox);
+    remoteVideosEl.appendChild(screenBox);
+
+    p.cameraTile = cameraBox;
+    p.screenTile = screenBox;
+    p.tile = cameraBox;
+    p.videoEl = cameraBox.querySelector(".remote-camera");
+    p.screenEl = screenBox.querySelector(".remote-screen");
+    p.placeholderEl = cameraBox.querySelector(".placeholder");
+    p.screenPlaceholderEl = screenBox.querySelector(".placeholder");
+    p.labelEl = cameraBox.querySelector(".label");
+
     const wireRemoteFullscreen = (button, video, name) => {
       if(!button) return;
       const stop = e => {
@@ -935,16 +978,8 @@
         openMediaFullscreen(video, name);
       });
     };
-    wireRemoteFullscreen(
-      box.querySelector(".remote-camera-item .media-fullscreen"),
-      p.videoEl,
-      `${p.name || "Guest"} — Camera`
-    );
-    wireRemoteFullscreen(
-      box.querySelector(".remote-screen-item .media-fullscreen"),
-      p.screenEl,
-      `${p.name || "Guest"} — Screen share`
-    );
+    wireRemoteFullscreen(cameraBox.querySelector(".media-fullscreen"), p.videoEl, `${p.name || "Guest"} — Camera`);
+    wireRemoteFullscreen(screenBox.querySelector(".media-fullscreen"), p.screenEl, `${p.name || "Guest"} — Screen share`);
     icons();
   }
 
@@ -1007,7 +1042,7 @@
     if(p.audioContext){ try{ p.audioContext.close(); }catch(e){} p.audioContext = null; }
     if(p.dataConn){ try{ p.dataConn.close(); }catch(e){} }
 
-    if(p.tile) p.tile.remove();
+    if(p.cameraTile) p.cameraTile.remove(); if(p.screenTile) p.screenTile.remove();
     peers.delete(id);
     removeKnownMember(id);
     if(isHost) broadcastMemberRoster();
@@ -1030,6 +1065,7 @@
     document.body.appendChild(modal);
   }
 
+  // Remote media is never injected into the floating local camera.
   let spotlightPeerId = null;
   let spotlightTimer = null;
   let spotlightManualUntil = 0;
@@ -1056,136 +1092,68 @@
         analyser.getByteTimeDomainData(data);
         let sum = 0;
         for(let i=0;i<data.length;i++){ const v=(data[i]-128)/128; sum += v*v; }
-        const nextSpeaking = Math.sqrt(sum/data.length) > 0.045;
-        if(nextSpeaking !== localSpeaking){ localSpeaking = nextSpeaking; updateSpotlight(); }
+        localSpeaking = Math.sqrt(sum/data.length) > 0.045;
         requestAnimationFrame(tick);
       };
       tick();
     }catch(e){}
   }
 
-  function spotlightCandidates(){
-    const list = [...peers.values()].filter(p => p.cameraStream || p.screenStream);
-    if((camOn || screenStream) && (localStream?.getVideoTracks().length || screenStream)) {
-      list.unshift({ id:"__local__", name:myName, cameraStream:camOn ? localStream : null, screenStream, speaking:localSpeaking, isLocal:true });
-    }
-    return list;
-  }
-
-  function setSpotlight(p){
-    const video = document.getElementById("spotlightVideo");
-    const label = document.getElementById("localLabel");
-    if(!video || !p){
-      if(video) { video.pause(); video.srcObject = null; video.classList.add("hidden"); }
-      if(label) label.innerHTML = '<svg data-lucide="user"></svg>' + escapeHtml(myName);
-      icons();
-      return;
-    }
-    const stream = p.cameraStream || p.screenStream;
-    video.srcObject = stream;
-    video.classList.remove("hidden");
-    video.muted = true;
-    video.play().catch(()=>{});
-    spotlightPeerId = p.id;
-    if(label) label.innerHTML = '<svg data-lucide="user"></svg>' + escapeHtml(p.name || "Guest");
-    icons();
-  }
-
-  function updateSpotlight(){
-    const candidates = spotlightCandidates();
-    if(!candidates.length){ setSpotlight(null); return; }
-    const speakers = candidates.filter(p => p.speaking);
-    if(speakers.length){
-      speakers.sort((a,b) => (b.speaking ? 1:0) - (a.speaking ? 1:0));
-      setSpotlight(speakers[0]);
-      spotlightManualUntil = Date.now() + 1000;
-      return;
-    }
-    if(spotlightManualUntil > Date.now() && spotlightPeerId){
-      const current = peers.get(spotlightPeerId);
-      if(current && candidates.includes(current)) return;
-    }
-  }
-
-  function startSpotlightCycle(){
-    clearInterval(spotlightTimer);
-    spotlightTimer = setInterval(() => {
-      const candidates = spotlightCandidates();
-      if(!candidates.length){ setSpotlight(null); return; }
-      const speakers = candidates.filter(p => p.speaking);
-      if(speakers.length){ setSpotlight(speakers[0]); return; }
-      let idx = candidates.findIndex(p => p.id === spotlightPeerId);
-      idx = (idx + 1) % candidates.length;
-      setSpotlight(candidates[idx]);
-    }, 3000);
-  }
-  startSpotlightCycle();
-
   const localBox = document.getElementById("localBox");
+  const localScreenBox = document.getElementById("localScreenBox");
   const mediaStage = document.getElementById("mediaStage");
   const mediaGrid = document.getElementById("mediaGrid");
   const stageLocalSlot = document.getElementById("stageLocalSlot");
   const collapseMedia = document.getElementById("collapseMedia");
+
   function wireFullscreenButton(button, video, name){
     if(!button) return;
     const stop = e => {
       e.stopPropagation();
-      // Do not let the floating-camera drag/click handlers see this gesture.
       if(e.cancelable) e.preventDefault();
     };
-    button.addEventListener("pointerdown", stop);
-    button.addEventListener("pointerup", stop);
-    button.addEventListener("mousedown", stop);
-    button.addEventListener("mouseup", stop);
+    ["pointerdown","pointerup","mousedown","mouseup"].forEach(type => button.addEventListener(type, stop));
     button.addEventListener("click", e => {
       stop(e);
       openMediaFullscreen(video, name);
     });
   }
-  wireFullscreenButton(
-    document.getElementById("localCameraFullscreen"),
-    localVideo,
-    `${myName} — Camera`
-  );
-  wireFullscreenButton(
-    document.getElementById("localScreenFullscreen"),
-    document.getElementById("localScreenVideo"),
-    `${myName} — Screen share`
-  );
+  wireFullscreenButton(document.getElementById("localCameraFullscreen"), localVideo, `${myName} — Camera`);
+  wireFullscreenButton(document.getElementById("localScreenFullscreen"), document.getElementById("localScreenVideo"), `${myName} — Screen share`);
+
   let mediaExpanded = false;
   let draggingLocal = false, dragMoved = false, dragDX = 0, dragDY = 0;
 
   function expandMedia(){
     mediaExpanded = true;
-    document.getElementById("spotlightVideo")?.classList.add("hidden");
-    localVideo.classList.remove("hidden");
     mediaStage.classList.add("open");
+
     stageLocalSlot.appendChild(localBox);
     localBox.classList.remove("floating-video");
-    // Keep the local camera exactly the same size when expanded.
-    localBox.style.left = "";
-    localBox.style.top = "";
-    localBox.style.right = "";
-    localBox.style.bottom = "";
+    localBox.style.cssText = "";
+    localBox.classList.add("video-box");
+
+    if(!localScreenBox.classList.contains("hidden")){
+      stageLocalSlot.appendChild(localScreenBox);
+    }
+
     remoteVideosEl.style.display = "flex";
     collapseMedia?.focus({preventScroll:true});
   }
+
   function collapseMediaView(){
     mediaExpanded = false;
-    updateSpotlight();
     mediaStage.classList.remove("open");
     document.body.appendChild(localBox);
     localBox.classList.add("floating-video");
-    // Return to the default top-right position unless the user has dragged it.
-    if(!localBox.style.left && !localBox.style.top){
-      localBox.style.right = "";
-      localBox.style.top = "";
-    }
     localBox.style.bottom = "auto";
     remoteVideosEl.style.display = "none";
   }
+
   collapseMedia?.addEventListener("click", collapseMediaView);
+
   localBox.addEventListener("pointerdown", e => {
+    if(e.target.closest(".media-fullscreen")) return;
     draggingLocal = true;
     dragMoved = false;
     const r = localBox.getBoundingClientRect();
@@ -1193,40 +1161,25 @@
     dragDY = e.clientY-r.top;
     localBox.setPointerCapture?.(e.pointerId);
   });
+
   localBox.addEventListener("pointermove", e => {
-    if(!draggingLocal) return;
-
-    // A real drag while expanded turns the camera back into a floating camera.
-    if(mediaExpanded){
-      const r = localBox.getBoundingClientRect();
-      if(Math.abs(e.clientX-(r.left+dragDX)) < 4 && Math.abs(e.clientY-(r.top+dragDY)) < 4) return;
-      dragMoved = true;
-      const x = Math.max(8, Math.min(window.innerWidth-r.width-8, e.clientX-dragDX));
-      const y = Math.max(8, Math.min(window.innerHeight-r.height-8, e.clientY-dragDY));
-      mediaExpanded = false;
-      mediaStage.classList.remove("open");
-      document.body.appendChild(localBox);
-      localBox.classList.add("floating-video");
-      remoteVideosEl.style.display = "none";
-      localBox.style.left = x + "px";
-      localBox.style.top = y + "px";
-      localBox.style.right = "auto";
-      localBox.style.bottom = "auto";
-      return;
-    }
-
+    if(!draggingLocal || mediaExpanded) return;
+    const dx = e.clientX - (localBox.getBoundingClientRect().left + dragDX);
+    const dy = e.clientY - (localBox.getBoundingClientRect().top + dragDY);
+    if(Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
     dragMoved = true;
     localBox.style.left = Math.max(8, Math.min(window.innerWidth-localBox.offsetWidth-8, e.clientX-dragDX)) + "px";
     localBox.style.top = Math.max(8, Math.min(window.innerHeight-localBox.offsetHeight-8, e.clientY-dragDY)) + "px";
     localBox.style.right = "auto";
     localBox.style.bottom = "auto";
   });
-  localBox.addEventListener("pointerup", e => {
+
+  localBox.addEventListener("pointerup", () => {
     if(!draggingLocal) return;
-    draggingLocal=false;
+    draggingLocal = false;
     if(!dragMoved && !mediaExpanded) expandMedia();
   });
-
+  localBox.addEventListener("pointercancel", () => { draggingLocal = false; });
 
   // Full GitHub-Flavored Markdown renderer. marked handles headings, emphasis,
   // lists, tables, task lists, blockquotes, code blocks, links, etc. DOMPurify
@@ -1947,19 +1900,20 @@
   }
 
   function updateRemoteTile(p){
-    if(!p?.tile) return;
+    if(!p) return;
     const cam = !!(p.cameraStream && p.cameraStream.getVideoTracks().length);
     const scr = !!(p.screenStream && p.screenStream.getVideoTracks().length);
-    const stack = p.tile.querySelector(".remote-media-stack");
-    if(stack){
-      stack.classList.toggle("single", !(cam && scr));
-      stack.classList.toggle("screen-only", !cam && scr);
+
+    if(p.cameraTile){
+      p.cameraTile.classList.toggle("empty", !cam);
+      if(p.videoEl) p.videoEl.classList.toggle("hidden", !cam);
+      if(p.placeholderEl) p.placeholderEl.style.display = cam ? "none" : "flex";
     }
-    p.tile.classList.toggle("has-camera-and-screen", cam && scr);
-    p.tile.classList.toggle("empty", !cam && !scr);
-    if(p.placeholderEl) p.placeholderEl.style.display = (cam || scr) ? "none" : "flex";
-    if(p.videoEl) p.videoEl.classList.toggle("hidden", !cam);
-    if(p.screenEl) p.screenEl.classList.toggle("hidden", !scr);
+    if(p.screenTile){
+      p.screenTile.classList.toggle("hidden", !scr);
+      if(p.screenEl) p.screenEl.classList.toggle("hidden", !scr);
+      if(p.screenPlaceholderEl) p.screenPlaceholderEl.style.display = scr ? "none" : "flex";
+    }
   }
 
   function setupSpeakingDetector(p, stream){
@@ -1983,8 +1937,8 @@
         for(let i=0;i<data.length;i++){ const v=(data[i]-128)/128; sum += v*v; }
         const rms = Math.sqrt(sum/data.length);
         const nextSpeaking = rms > 0.045;
-        if(nextSpeaking !== p.speaking){ p.speaking = nextSpeaking; updateSpotlight(); }
-        p.tile?.classList.toggle("speaking", p.speaking);
+        if(nextSpeaking !== p.speaking){ p.speaking = nextSpeaking;  }
+        p.cameraTile?.classList.toggle("speaking", p.speaking);
         requestAnimationFrame(tick);
       };
       tick();
@@ -2004,7 +1958,7 @@
         setupSpeakingDetector(p, remoteStream);
       }
       updateRemoteTile(p);
-      updateSpotlight();
+      
     });
 
     const clearIfCurrent = () => {
@@ -2015,7 +1969,7 @@
       if(kind === "screen") { p.screenConn = null; p.screenStream = null; if(p.screenEl) p.screenEl.srcObject = null; }
       else { p.cameraConn = null; p.cameraStream = null; if(p.videoEl) p.videoEl.srcObject = null; }
       updateRemoteTile(p);
-      updateSpotlight();
+      
     };
     conn.on("close", clearIfCurrent);
     conn.on("error", clearIfCurrent);
@@ -2332,6 +2286,18 @@
     setIcon(toggleStartPassword.querySelector("svg"), hidden ? "eye-off" : "eye");
   });
 
+  if(toggleRoomPassword){
+    toggleRoomPassword.addEventListener("click", () => {
+      if(!roomPasswordValue || !roomPassword) return;
+      const hidden = roomPasswordValue.classList.contains("masked");
+      roomPasswordValue.textContent = hidden ? roomPassword : "••••••••";
+      roomPasswordValue.classList.toggle("masked", !hidden);
+      toggleRoomPassword.setAttribute("title", hidden ? "Hide password" : "Reveal password");
+      toggleRoomPassword.setAttribute("aria-label", hidden ? "Hide password" : "Reveal password");
+      setIcon(toggleRoomPassword.querySelector("svg"), hidden ? "eye-off" : "eye");
+    });
+  }
+
   copyStartCode.addEventListener("click", () => {
     navigator.clipboard.writeText(startCode.textContent).then(() => flashCopied(copyStartCode));
   });
@@ -2400,7 +2366,7 @@
       stopRemoteMedia(p);
       try{ if(p.audioContext) p.audioContext.close(); }catch(e){}
       try{ if(p.dataConn) p.dataConn.close(); }catch(e){}
-      if(p.tile) p.tile.remove();
+      if(p.cameraTile) p.cameraTile.remove(); if(p.screenTile) p.screenTile.remove();
     });
     peers.clear();
     clearSession();
