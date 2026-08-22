@@ -752,8 +752,8 @@
     box.dataset.peer = p.id;
     box.innerHTML = `
       <video autoplay playsinline class="hidden"></video>
-      <div class="placeholder"><svg data-lucide="video-off"></svg>Waiting for video</div>
-      <div class="label hidden"><svg data-lucide="user"></svg>${escapeHtml(p.name)}</div>
+      <div class="placeholder"><svg data-lucide="video-off"></svg></div>
+      <div class="label"><svg data-lucide="user"></svg>${escapeHtml(p.name)}</div>
     `;
     box.addEventListener("click", () => {
       if(p.videoEl && !p.videoEl.classList.contains("hidden")) openVideoModal(p.videoEl.srcObject, p.name);
@@ -1115,25 +1115,33 @@
     return files.some(f => f.webkitRelativePath && f.webkitRelativePath.includes("/"));
   }
 
+  // Folder-aware file selection. Browser folder pickers expose files with
+  // webkitRelativePath; keep that path so the generated ZIP preserves the folder.
   function handleFiles(files){
     if(!files || !files.length) return;
 
-    // A directory selection (or a dragged folder) must stay a directory.
-    // Always package it into a ZIP while preserving every relative path.
-    if(hasFolderPaths(files)){
-      zipFiles(files, true).then(zipFile => sendFileToAll(zipFile)).catch(() => {
-        setStatus(callStatus, "Couldn't package that folder.", "err");
+    const list = Array.from(files).filter(f => f && typeof f.size === "number");
+    if(!list.length) return;
+
+    const hasFolderPaths = list.some(f => f.webkitRelativePath);
+
+    // A selected folder is represented by its contained files. Zip the entire
+    // selection, including zero-byte files, rather than treating it as a 0 B file.
+    if(hasFolderPaths){
+      zipFiles(list, true).then(zipFile => sendFileToAll(zipFile)).catch(err => {
+        console.error("Folder zip failed:", err);
+        setStatus(callStatus, "Couldn't prepare that folder.", "err");
       });
       return;
     }
 
-    if(files.length === 1){
-      sendFileToAll(files[0]);
+    if(list.length === 1){
+      sendFileToAll(list[0]);
       return;
     }
 
-    const mediaFiles = files.filter(f => isImage(f.type, f.name) || isVideo(f.type, f.name));
-    const otherFiles = files.filter(f => !(isImage(f.type, f.name) || isVideo(f.type, f.name)));
+    const mediaFiles = list.filter(f => isImage(f.type, f.name) || isVideo(f.type, f.name));
+    const otherFiles = list.filter(f => !(isImage(f.type, f.name) || isVideo(f.type, f.name)));
 
     mediaFiles.forEach(f => sendFileToAll(f));
 
@@ -1151,37 +1159,35 @@
     if(!window.JSZip){
       return Promise.reject(new Error("JSZip not available"));
     }
-    const zip = new JSZip();
-    const usedNames = new Set();
-    files.forEach(f => {
-      // webkitRelativePath is populated when a folder is selected with
-      // webkitdirectory, and is also available for folder drops in Chromium.
-      let name = preservePaths && f.webkitRelativePath ? f.webkitRelativePath : (f.name || "file");
-      name = name.replace(/^\/+/, "").replace(/\\/g, "/");
-      if(!name) name = f.name || "file";
 
-      // For ordinary multi-file selection, keep the existing duplicate-name
-      // protection. Folder paths are already unique by their full path.
-      if(!preservePaths){
-        let candidate = name;
-        let i = 1;
-        while(usedNames.has(candidate)){
-          const dot = f.name.lastIndexOf(".");
-          candidate = dot > -1 ? `${f.name.slice(0,dot)} (${i})${f.name.slice(dot)}` : `${f.name} (${i})`;
-          i++;
-        }
-        name = candidate;
-      }
-      usedNames.add(name);
+    const zip = new JSZip();
+
+    files.forEach((f, index) => {
+      // For folder selections, webkitRelativePath is the actual path relative
+      // to the selected folder. For ordinary multi-file selections, use names.
+      let name = preservePaths && f.webkitRelativePath
+        ? f.webkitRelativePath
+        : (f.name || `file-${index + 1}`);
+
+      // Strip an accidental leading slash but otherwise preserve directories.
+      name = name.replace(/^[/\\]+/, "").replace(/\\/g, "/");
+
+      // JSZip can handle zero-byte files correctly; do not skip them.
       zip.file(name, f);
     });
-    return zip.generateAsync({ type: "blob", compression: "DEFLATE" }).then(blob => {
+
+    return zip.generateAsync({
+      type: "blob",
+      compression: "DEFLATE",
+      compressionOptions: { level: 6 },
+      streamFiles: true
+    }).then(blob => {
       const stamp = new Date().toISOString().replace(/[:.]/g,"-").slice(0,19);
-      const folderName = preservePaths && files[0].webkitRelativePath
+      const prefix = preservePaths && files[0]?.webkitRelativePath
         ? files[0].webkitRelativePath.split("/")[0]
-        : null;
-      const filename = folderName ? `${folderName}.zip` : `files-${stamp}.zip`;
-      return new File([blob], filename, { type: "application/zip" });
+        : "files";
+      const safePrefix = (prefix || "files").replace(/[^\w.-]+/g, "_");
+      return new File([blob], `${safePrefix}-${stamp}.zip`, { type: "application/zip" });
     });
   }
 
