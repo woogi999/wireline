@@ -280,11 +280,18 @@
     position:relative;
   }
 
-  .videos{
-    display:flex;
-    flex-direction:column;
-    gap:8px;
-  }
+  .videos{display:flex; flex-wrap:wrap; gap:8px; min-width:0;}
+  .videos > .video-box{flex:1 1 220px; min-width:180px; max-width:420px;}
+  .floating-video{position:fixed; z-index:35; width:220px; height:145px; right:24px; bottom:24px; aspect-ratio:auto !important; box-shadow:0 10px 30px rgba(0,0,0,.22); cursor:grab; user-select:none;}
+  .floating-video:active{cursor:grabbing;}
+  .floating-grip{position:absolute; top:6px; left:50%; transform:translateX(-50%); padding:1px 8px; border-radius:10px; background:rgba(0,0,0,.35); color:#fff; opacity:.75; pointer-events:none;}
+  .floating-grip svg{width:15px;height:15px;}
+  .media-stage{display:none; flex:0 0 auto; border:1px solid var(--border); border-radius:12px; background:var(--panel); padding:8px; margin-bottom:10px; max-height:42vh; overflow:auto;}
+  .media-stage.open{display:block;}
+  .media-stage-head{display:flex;align-items:center;justify-content:space-between;font-size:12px;font-weight:700;color:var(--muted);padding:2px 2px 8px;}
+  .media-grid{display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;}
+  .stage-local{display:flex;flex:1 1 220px;min-width:180px;}
+  .media-grid .video-box{width:220px;min-width:180px;flex:1 1 220px;aspect-ratio:4/3;}
   .video-box{
     position:relative;
     background:var(--video-bg);
@@ -533,8 +540,9 @@
       border-bottom:1px solid var(--border);
       max-height:45vh;
     }
-    .videos{flex-direction:row; flex:1 1 200px;}
-    .video-box{aspect-ratio:4/3; width:auto; flex:1;}
+    .media-grid{flex-direction:column;}
+    .media-grid .video-box{width:100%; max-width:none;}
+    .floating-video{width:180px;height:120px;right:12px;bottom:12px;}
     .call-controls{flex-direction:row; flex-wrap:wrap; flex:1 1 100%;}
     .call-controls .btn{width:auto; flex:1;}
   }
@@ -619,12 +627,10 @@
           <div id="membersList"></div>
         </div>
 
-        <div class="videos">
-          <div class="video-box" id="localBox">
-            <video id="localVideo" autoplay playsinline muted></video>
-            <div class="label" id="localLabel"><svg data-lucide="user"></svg>You</div>
-          </div>
-          <div class="videos" id="remoteVideos"></div>
+        <div class="floating-video video-box" id="localBox" title="Drag to move • Click to expand cameras">
+          <video id="localVideo" autoplay playsinline muted></video>
+          <div class="label" id="localLabel"><svg data-lucide="user"></svg>You</div>
+          <div class="floating-grip"><svg data-lucide="grip-horizontal"></svg></div>
         </div>
 
         <div class="call-controls">
@@ -640,6 +646,13 @@
       </aside>
 
       <main class="chat-area" id="chatArea">
+        <div class="media-stage" id="mediaStage">
+          <div class="media-stage-head"><span>Camera &amp; screen share</span><button class="btn icon-only" id="collapseMedia" title="Minimize cameras"><svg data-lucide="chevron-up"></svg></button></div>
+          <div class="media-grid" id="mediaGrid">
+            <div class="stage-local" id="stageLocalSlot"></div>
+            <div class="videos" id="remoteVideos"></div>
+          </div>
+        </div>
         <div class="chat-log" id="chatLog"></div>
         <div class="dropzone-overlay hidden" id="dropOverlay"><svg data-lucide="upload" class="icon"></svg>Drop file to send</div>
         <div class="chat-input-row">
@@ -751,6 +764,7 @@
   let roomPassword = "";
   let hostClosingRoom = false;
   let bannedClientIds = new Set();
+  let knownMembers = new Map(); // id -> {name, isHost}
   const CLIENT_ID_KEY = "wireline_client_id";
   function getClientId(){
     try{ let id=localStorage.getItem(CLIENT_ID_KEY); if(!id){ id=crypto.randomUUID(); localStorage.setItem(CLIENT_ID_KEY,id); } return id; }catch(e){ return "client-" + Math.random().toString(36).slice(2) + Date.now().toString(36); }
@@ -781,9 +795,32 @@
   const leaveBtn = document.getElementById("leaveBtn");
   const copyRoomCode = document.getElementById("copyRoomCode");
   const copyRoomLink = document.getElementById("copyRoomLink");
+  remoteVideosEl.style.display = "none";
 
   function escapeHtml(s){
     return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  }
+
+  function updateKnownMember(id, name, isHostMember=false){
+    if(!id) return;
+    knownMembers.set(String(id), {name: name || "Guest", isHost: !!isHostMember});
+    renderMembers();
+  }
+  function removeKnownMember(id){
+    if(id) knownMembers.delete(String(id));
+    renderMembers();
+  }
+  function hostMemberRoster(){
+    const out = [{id: myId, name: myName, isHost:true}];
+    peers.forEach(p => { if(p.authenticated) out.push({id:p.id, name:p.name || "Guest", isHost:false}); });
+    return out;
+  }
+  function broadcastMemberRoster(){
+    if(!isHost) return;
+    const roster = hostMemberRoster();
+    knownMembers.clear();
+    roster.forEach(x => updateKnownMember(x.id, x.name, x.isHost));
+    peers.forEach(p => { if(p.authenticated && p.dataConn?.open){ try{ p.dataConn.send({type:"member-list", members:roster}); }catch(e){} } });
   }
 
   function enterRoom(code){
@@ -811,9 +848,6 @@
       <div class="placeholder"><svg data-lucide="video-off"></svg></div>
       <div class="label"><svg data-lucide="user"></svg>${escapeHtml(p.name)}</div>
     `;
-    box.addEventListener("click", () => {
-      if(p.videoEl && !p.videoEl.classList.contains("hidden")) openVideoModal(p.videoEl.srcObject, p.name);
-    });
     remoteVideosEl.appendChild(box);
     p.tile = box;
     p.videoEl = box.querySelector("video");
@@ -828,8 +862,10 @@
       p = { id, name: name || "Them", dataConn: null, mediaConn: null, dataConnToken: 0, mediaConnToken: 0, isHostConnection: false, authenticated: false, clientId: "" };
       peers.set(id, p);
       createPeerTile(p);
+      if(isHost || p.isHostConnection) updateKnownMember(id, p.name, !!p.isHostConnection);
     } else if(name && p.name !== name){
       p.name = name;
+      updateKnownMember(id, p.name, !!p.isHostConnection);
       if(p.labelEl) p.labelEl.innerHTML = '<svg data-lucide="user"></svg>' + escapeHtml(name);
       icons();
     }
@@ -840,18 +876,19 @@
     const list = document.getElementById("membersList");
     if(!list) return;
     list.innerHTML = "";
-    const self = document.createElement("div");
-    self.className = "member-row";
-    self.innerHTML = `<span class="member-name">${escapeHtml(myName)}</span><span class="member-role">${isHost ? "Host" : "You"}</span>`;
-    list.appendChild(self);
-    peers.forEach(p => {
-      if(!p.authenticated) return;
+    const entries = [...knownMembers.entries()];
+    const selfId = String(myId || "self");
+    if(!entries.some(([id]) => id === selfId || id === "self")) entries.unshift([selfId, {name:myName,isHost}]);
+    entries.sort((a,b) => (b[1].isHost?1:0)-(a[1].isHost?1:0));
+    entries.forEach(([id, member]) => {
       const row=document.createElement("div"); row.className="member-row";
-      const name=document.createElement("span"); name.className="member-name"; name.textContent=p.name || "Guest";
+      const name=document.createElement("span"); name.className="member-name"; name.textContent=member.name || "Guest";
       row.appendChild(name);
-      if(isHost){
-        const kick=document.createElement("button"); kick.className="btn danger member-action"; kick.textContent="Kick"; kick.onclick=()=>moderatePeer(p.id,false); row.appendChild(kick);
-        const ban=document.createElement("button"); ban.className="btn danger member-action"; ban.textContent="Ban"; ban.onclick=()=>moderatePeer(p.id,true); row.appendChild(ban);
+      const role=document.createElement("span"); role.className="member-role"; role.textContent=member.isHost ? "Host" : (id===String(myId) ? "You" : "Member");
+      row.appendChild(role);
+      if(isHost && id !== String(myId) && peers.has(id)){
+        const kick=document.createElement("button"); kick.className="btn danger member-action"; kick.textContent="Kick"; kick.onclick=()=>moderatePeer(id,false); row.appendChild(kick);
+        const ban=document.createElement("button"); ban.className="btn danger member-action"; ban.textContent="Ban"; ban.onclick=()=>moderatePeer(id,true); row.appendChild(ban);
       }
       list.appendChild(row);
     });
@@ -880,6 +917,8 @@
 
     if(p.tile) p.tile.remove();
     peers.delete(id);
+    removeKnownMember(id);
+    if(isHost) broadcastMemberRoster();
 
     if(announce && p.name && p.name !== "Them") addMsg(`${p.name} left`, "system");
     updateConnectionStatus();
@@ -898,9 +937,49 @@
     modal.addEventListener("click", () => modal.remove());
     document.body.appendChild(modal);
   }
-  localVideo.parentElement.addEventListener("click", () => {
-    if(localStream && localStream.getVideoTracks().length) openVideoModal(localStream, myName);
+
+  const localBox = document.getElementById("localBox");
+  const mediaStage = document.getElementById("mediaStage");
+  const mediaGrid = document.getElementById("mediaGrid");
+  const stageLocalSlot = document.getElementById("stageLocalSlot");
+  const collapseMedia = document.getElementById("collapseMedia");
+  let mediaExpanded = false;
+  let draggingLocal = false, dragMoved = false, dragDX = 0, dragDY = 0;
+
+  function expandMedia(){
+    mediaExpanded = true;
+    mediaStage.classList.add("open");
+    stageLocalSlot.appendChild(localBox);
+    localBox.classList.remove("floating-video");
+    remoteVideosEl.style.display = "flex";
+    collapseMedia?.focus({preventScroll:true});
+  }
+  function collapseMediaView(){
+    mediaExpanded = false;
+    mediaStage.classList.remove("open");
+    document.body.appendChild(localBox);
+    localBox.classList.add("floating-video");
+    remoteVideosEl.style.display = "none";
+  }
+  collapseMedia?.addEventListener("click", collapseMediaView);
+  localBox.addEventListener("pointerdown", e => {
+    if(mediaExpanded) return;
+    draggingLocal = true; dragMoved = false;
+    const r = localBox.getBoundingClientRect(); dragDX = e.clientX-r.left; dragDY=e.clientY-r.top;
+    localBox.setPointerCapture?.(e.pointerId);
   });
+  localBox.addEventListener("pointermove", e => {
+    if(!draggingLocal || mediaExpanded) return;
+    dragMoved = true;
+    localBox.style.left = Math.max(8, Math.min(window.innerWidth-localBox.offsetWidth-8, e.clientX-dragDX)) + "px";
+    localBox.style.top = Math.max(8, Math.min(window.innerHeight-localBox.offsetHeight-8, e.clientY-dragDY)) + "px";
+    localBox.style.right = "auto"; localBox.style.bottom = "auto";
+  });
+  localBox.addEventListener("pointerup", e => {
+    if(!draggingLocal) return; draggingLocal=false;
+    if(!dragMoved) expandMedia();
+  });
+
 
   // Full GitHub-Flavored Markdown renderer. marked handles headings, emphasis,
   // lists, tables, task lists, blockquotes, code blocks, links, etc. DOMPurify
@@ -1110,18 +1189,20 @@
         p.clientId = String(msg.clientId || "");
         p.authenticated = true;
         p.name = msg.name || "Them";
+        updateKnownMember(fromId, p.name, false);
         if(p.labelEl) p.labelEl.innerHTML = '<svg data-lucide="user"></svg>' + escapeHtml(p.name);
         icons();
         try{ p.dataConn?.send({ type: "auth-ok", name: myName }); }catch(e){}
         const roster = [...peers.values()]
           .filter(other => other.id !== fromId && other.id !== myId && other.authenticated && other.dataConn && other.dataConn.open)
-          .map(other => ({ id: other.id, name: other.name }));
+          .map(other => ({ id: other.id, name: other.name, isHost:false }));
         try{ p.dataConn?.send({ type: "roster", peers: roster }); }catch(e){}
         addMsg(`${p.name} joined`, "system");
-        renderMembers();
+        broadcastMemberRoster();
       } else {
         p.name = msg.name || "Host";
         p.authenticated = true;
+        updateKnownMember(fromId, p.name, true);
         if(p.labelEl) p.labelEl.innerHTML = '<svg data-lucide="user"></svg>' + escapeHtml(p.name);
         icons();
       }
@@ -1132,6 +1213,10 @@
       enterRoom(roomCodeTag.textContent);
       setRoomUrl("guest", roomCodeTag.textContent);
       try{ p.dataConn?.send({ type: "history-request" }); }catch(e){}
+    } else if(msg.type === "member-list"){
+      knownMembers.clear();
+      (msg.members || []).forEach(m => updateKnownMember(m.id, m.name, !!m.isHost));
+      renderMembers();
     } else if(msg.type === "banned"){
       setStatus(joinStatus, "You are banned from this room.", "err");
       try{ myPeer?.destroy(); }catch(e){}
@@ -1160,6 +1245,7 @@
     } else if(msg.type === "roster"){
       if(!p.authenticated && !isHost) return;
       (msg.peers || []).forEach(entry => {
+        updateKnownMember(entry.id, entry.name, !!entry.isHost);
         if(entry.id === myId) return;
         const existing = peers.get(entry.id);
         if(existing && existing.dataConn) return;
@@ -1849,6 +1935,8 @@
     if(startPasswordDisplay){ startPasswordDisplay.dataset.password = roomPassword; startPasswordDisplay.textContent = roomPassword ? "••••••••" : "No password"; startPasswordDisplay.classList.toggle("masked", !!roomPassword); }
     saveName(myName);
     isHost = true;
+    knownMembers.clear();
+    updateKnownMember("self", myName, true);
     const peerId = codeToPeerId(code);
     startBtn.disabled = true;
 
