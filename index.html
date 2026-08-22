@@ -282,7 +282,25 @@
 
   .videos{display:flex; flex-wrap:wrap; gap:8px; min-width:0;}
   .videos > .video-box{flex:1 1 220px; min-width:180px; max-width:420px;}
-  .floating-video{position:fixed; z-index:35; width:220px; height:145px; right:24px; top:24px; bottom:auto; aspect-ratio:auto !important; box-shadow:0 10px 30px rgba(0,0,0,.22); cursor:grab; user-select:none;}
+  .video-box.floating-video{
+    position:fixed !important;
+    z-index:1000 !important;
+    width:220px;
+    height:145px;
+    min-width:220px;
+    max-width:220px;
+    right:24px;
+    top:24px;
+    bottom:auto;
+    left:auto;
+    flex:none;
+    aspect-ratio:auto !important;
+    box-shadow:0 10px 30px rgba(0,0,0,.22);
+    cursor:grab;
+    user-select:none;
+}
+.video-box.floating-video video{width:100%;height:100%;}
+body > .video-box.floating-video{position:fixed !important;}
   #stageLocalSlot > .video-box{width:220px; height:145px; min-width:220px; max-width:220px; flex:0 0 220px; aspect-ratio:auto;}
   .floating-video:active{cursor:grabbing;}
   .floating-grip{position:absolute; top:6px; left:50%; transform:translateX(-50%); padding:1px 8px; border-radius:10px; background:rgba(0,0,0,.35); color:#fff; opacity:.75; pointer-events:none;}
@@ -544,7 +562,7 @@
     }
     .media-grid{flex-direction:column;}
     .media-grid .video-box{width:100%; max-width:none;}
-    .floating-video{width:180px;height:120px;right:12px;top:12px;bottom:auto;}
+    .video-box.floating-video{width:180px;height:120px;min-width:180px;max-width:180px;right:12px;top:12px;bottom:auto;}
     #stageLocalSlot > .video-box{width:180px;height:120px;min-width:180px;max-width:180px;flex-basis:180px;}
     .call-controls{flex-direction:row; flex-wrap:wrap; flex:1 1 100%;}
     .call-controls .btn{width:auto; flex:1;}
@@ -947,14 +965,33 @@
   const stageLocalSlot = document.getElementById("stageLocalSlot");
   const collapseMedia = document.getElementById("collapseMedia");
   let mediaExpanded = false;
-  let draggingLocal = false, dragMoved = false, dragDX = 0, dragDY = 0;
+  let draggingLocal = false;
+  let dragMoved = false;
+  let dragDX = 0;
+  let dragDY = 0;
+  let dragPointerId = null;
+
+  function makeFloatingAt(x, y){
+    // Move the element to <body> before applying fixed positioning. This
+    // guarantees it is positioned against the viewport, not the sidebar.
+    document.body.appendChild(localBox);
+    localBox.classList.add("floating-video");
+    localBox.style.right = "auto";
+    localBox.style.bottom = "auto";
+
+    const w = localBox.offsetWidth || 220;
+    const h = localBox.offsetHeight || 145;
+    const maxX = Math.max(8, window.innerWidth - w - 8);
+    const maxY = Math.max(8, window.innerHeight - h - 8);
+    localBox.style.left = Math.max(8, Math.min(maxX, x)) + "px";
+    localBox.style.top = Math.max(8, Math.min(maxY, y)) + "px";
+  }
 
   function expandMedia(){
     mediaExpanded = true;
     mediaStage.classList.add("open");
     stageLocalSlot.appendChild(localBox);
     localBox.classList.remove("floating-video");
-    // Keep the local camera exactly the same size when expanded.
     localBox.style.left = "";
     localBox.style.top = "";
     localBox.style.right = "";
@@ -962,61 +999,91 @@
     remoteVideosEl.style.display = "flex";
     collapseMedia?.focus({preventScroll:true});
   }
+
   function collapseMediaView(){
     mediaExpanded = false;
     mediaStage.classList.remove("open");
+
+    // Put it back in the body so fixed positioning is relative to the viewport.
     document.body.appendChild(localBox);
     localBox.classList.add("floating-video");
-    // Return to the default top-right position unless the user has dragged it.
-    if(!localBox.style.left && !localBox.style.top){
-      localBox.style.right = "";
-      localBox.style.top = "";
+
+    // Preserve a user-selected position. Otherwise use the default top-right.
+    if(!localBox.style.left || !localBox.style.top){
+      localBox.style.left = "auto";
+      localBox.style.top = "24px";
+      localBox.style.right = "24px";
     }
     localBox.style.bottom = "auto";
     remoteVideosEl.style.display = "none";
   }
+
   collapseMedia?.addEventListener("click", collapseMediaView);
+
   localBox.addEventListener("pointerdown", e => {
     draggingLocal = true;
     dragMoved = false;
+    dragPointerId = e.pointerId;
+
     const r = localBox.getBoundingClientRect();
-    dragDX = e.clientX-r.left;
-    dragDY = e.clientY-r.top;
+    dragDX = e.clientX - r.left;
+    dragDY = e.clientY - r.top;
+
     localBox.setPointerCapture?.(e.pointerId);
   });
-  localBox.addEventListener("pointermove", e => {
-    if(!draggingLocal) return;
 
-    // A real drag while expanded turns the camera back into a floating camera.
+  localBox.addEventListener("pointermove", e => {
+    if(!draggingLocal || e.pointerId !== dragPointerId) return;
+
+    // Don't treat tiny pointer movement as a drag/click yet.
+    const current = localBox.getBoundingClientRect();
+    const movedX = Math.abs(e.clientX - (current.left + dragDX));
+    const movedY = Math.abs(e.clientY - (current.top + dragDY));
+    if(!dragMoved && movedX < 5 && movedY < 5) return;
+
+    dragMoved = true;
+
     if(mediaExpanded){
+      // Capture the camera's current viewport position before reparenting.
       const r = localBox.getBoundingClientRect();
-      if(Math.abs(e.clientX-(r.left+dragDX)) < 4 && Math.abs(e.clientY-(r.top+dragDY)) < 4) return;
-      dragMoved = true;
-      const x = Math.max(8, Math.min(window.innerWidth-r.width-8, e.clientX-dragDX));
-      const y = Math.max(8, Math.min(window.innerHeight-r.height-8, e.clientY-dragDY));
+      const x = e.clientX - dragDX;
+      const y = e.clientY - dragDY;
+
       mediaExpanded = false;
       mediaStage.classList.remove("open");
-      document.body.appendChild(localBox);
-      localBox.classList.add("floating-video");
+      makeFloatingAt(x, y);
       remoteVideosEl.style.display = "none";
-      localBox.style.left = x + "px";
-      localBox.style.top = y + "px";
-      localBox.style.right = "auto";
-      localBox.style.bottom = "auto";
+
+      // Re-grab the pointer after moving the element from the stage to body.
+      localBox.setPointerCapture?.(e.pointerId);
       return;
     }
 
-    dragMoved = true;
-    localBox.style.left = Math.max(8, Math.min(window.innerWidth-localBox.offsetWidth-8, e.clientX-dragDX)) + "px";
-    localBox.style.top = Math.max(8, Math.min(window.innerHeight-localBox.offsetHeight-8, e.clientY-dragDY)) + "px";
+    const w = localBox.offsetWidth;
+    const h = localBox.offsetHeight;
+    const x = Math.max(8, Math.min(window.innerWidth - w - 8, e.clientX - dragDX));
+    const y = Math.max(8, Math.min(window.innerHeight - h - 8, e.clientY - dragDY));
+
+    localBox.style.left = x + "px";
+    localBox.style.top = y + "px";
     localBox.style.right = "auto";
     localBox.style.bottom = "auto";
   });
-  localBox.addEventListener("pointerup", e => {
-    if(!draggingLocal) return;
-    draggingLocal=false;
+
+  function finishLocalPointer(e){
+    if(!draggingLocal || e.pointerId !== dragPointerId) return;
+    draggingLocal = false;
+    dragPointerId = null;
+
+    try{ localBox.releasePointerCapture?.(e.pointerId); }catch(_){}
+
+    // A click while expanded does nothing; only an actual drag floats it.
+    // A click while floating expands it.
     if(!dragMoved && !mediaExpanded) expandMedia();
-  });
+  }
+
+  localBox.addEventListener("pointerup", finishLocalPointer);
+  localBox.addEventListener("pointercancel", finishLocalPointer);
 
 
   // Full GitHub-Flavored Markdown renderer. marked handles headings, emphasis,
