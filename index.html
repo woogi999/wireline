@@ -1607,6 +1607,21 @@
         }
         if(staged.done) finalizeIncomingFile(key, entry);
       }
+    } else if(msg.type === "file-chunk"){
+      // Fallback path: used only when the dedicated raw file channel to this
+      // peer couldn't be established, so chunks travel wrapped on the
+      // ordinary control connection instead. Slower, but never fails.
+      const key = `${fromId}:${msg.id}`;
+      const f = incomingFiles.get(key);
+      if(!f) return;
+      f.chunks.push(msg.data);
+      f.received += msg.data.byteLength || msg.data.length || 0;
+      const pct = f.size ? Math.min(100, f.received/f.size*100) : 0;
+      if(f.refs) f.refs.progressFill.style.width = pct.toFixed(1) + "%";
+    } else if(msg.type === "file-done"){
+      const key = `${fromId}:${msg.id}`;
+      const f = incomingFiles.get(key);
+      if(f) finalizeIncomingFile(key, f);
     }
   }
 
@@ -1959,11 +1974,16 @@
     if(p.fileConn && p.fileConn.open) return Promise.resolve(p.fileConn);
     return new Promise((resolve, reject) => {
       let settled = false;
-      const conn = myPeer.connect(peerId, { reliable: true, serialization: "none", metadata: { kind: "file" } });
+      // label is a second, independent way for the receiving side to
+      // recognize this as the file channel (in addition to metadata) —
+      // belt-and-suspenders in case metadata isn't populated yet at the
+      // instant the receiving side's "connection" event fires.
+      const conn = myPeer.connect(peerId, { reliable: true, serialization: "none", metadata: { kind: "file" }, label: "wireline-file" });
       p.fileConn = conn;
       conn.on("open", () => { if(!settled){ settled = true; resolve(conn); } });
       conn.on("error", (err) => { if(!settled){ settled = true; reject(err); } });
-      setTimeout(() => { if(!settled){ settled = true; reject(new Error("file channel timed out")); } }, 8000);
+      conn.on("close", () => { if(!settled){ settled = true; reject(new Error("file channel closed before opening")); } });
+      setTimeout(() => { if(!settled){ settled = true; reject(new Error("file channel timed out")); } }, 4000);
     });
   }
 
@@ -1988,14 +2008,15 @@
       return;
     }
 
-    const fileConns = (await Promise.all(
-      targets.map(([id]) => ensureFileConn(id).catch(() => null))
-    )).filter(Boolean);
-
-    if(!fileConns.length){
-      setStatus(callStatus, "Couldn't open a transfer channel — try again.", "err");
-      return;
-    }
+    // Try the fast dedicated channel for every recipient independently.
+    // Anyone it fails for (e.g. their browser/network doesn't like the
+    // extra data channel) just falls back to sending over the existing
+    // control connection instead — slower for that peer, but the transfer
+    // still completes rather than failing outright.
+    const resolved = await Promise.all(targets.map(async ([id, p]) => {
+      try{ return { p, fast: await ensureFileConn(id) }; }
+      catch(e){ return { p, fast: null }; }
+    }));
 
     const fileId = ++fileIdCounter;
     targets.forEach(([, p]) => {
@@ -2030,12 +2051,11 @@
           const slice = value.slice(offset, offset + CHUNK_SIZE);
           const frame = buildChunkFrame(fileId, slice);
 
-          // Send this same frame to every currently-open recipient.
-          // The sender's progress is independent of the recipient UI.
-          const liveConns = fileConns.filter(c => c.open && c.dataChannel && c.dataChannel.readyState === "open");
-          liveConns.forEach(c => {
-            try{ c.send(frame); }catch(e){}
-          });
+          const liveFast = resolved.filter(r => r.fast && r.fast.open && r.fast.dataChannel && r.fast.dataChannel.readyState === "open");
+          const liveFallback = resolved.filter(r => !r.fast && r.p.dataConn && r.p.dataConn.open);
+
+          liveFast.forEach(r => { try{ r.fast.send(frame); }catch(e){} });
+          liveFallback.forEach(r => { try{ r.p.dataConn.send({ type: "file-chunk", id: fileId, data: slice }); }catch(e){} });
 
           offset += slice.length;
           sent = Math.min(file.size, sent + slice.length);
@@ -2046,23 +2066,23 @@
               Math.min(100, (sent / Math.max(1, file.size)) * 100).toFixed(1) + "%";
           }
 
-          const maxBuffered = Math.max(
-            0,
-            ...liveConns.map(c => c.dataChannel.bufferedAmount)
-          );
+          const buffChannels = [
+            ...liveFast.map(r => r.fast.dataChannel),
+            ...liveFallback.map(r => r.p.dataConn.dataChannel)
+          ];
+          const maxBuffered = Math.max(0, ...buffChannels.map(dc => dc.bufferedAmount));
 
           if(maxBuffered > BUFFER_LIMIT){
-            await waitForDrain(
-              liveConns.map(c => c.dataChannel),
-              DRAIN_THRESHOLD
-            );
+            await waitForDrain(buffChannels, DRAIN_THRESHOLD);
           }
         }
       }
 
-      fileConns.forEach(c => {
-        if(c.open){
-          try{ c.send(buildDoneFrame(fileId)); }catch(e){}
+      resolved.forEach(r => {
+        if(r.fast && r.fast.open){
+          try{ r.fast.send(buildDoneFrame(fileId)); }catch(e){}
+        } else if(r.p.dataConn && r.p.dataConn.open){
+          try{ r.p.dataConn.send({ type: "file-done", id: fileId }); }catch(e){}
         }
       });
 
@@ -2491,7 +2511,7 @@
       startBtn.disabled = false;
     });
     myPeer.on("connection", (conn) => {
-      if(conn.metadata?.kind === "file"){ wireFileConn(conn); return; }
+      if(conn.metadata?.kind === "file" || conn.label === "wireline-file"){ wireFileConn(conn); return; }
       wireDataConn(conn);
       updateConnectionStatus();
     });
@@ -2572,7 +2592,7 @@
       joinBtn.disabled = false;
     });
     myPeer.on("connection", (conn) => {
-      if(conn.metadata?.kind === "file"){ wireFileConn(conn); return; }
+      if(conn.metadata?.kind === "file" || conn.label === "wireline-file"){ wireFileConn(conn); return; }
       wireDataConn(conn);
       updateConnectionStatus();
     });
