@@ -282,21 +282,42 @@
 
   .videos{display:flex; flex-wrap:wrap; gap:8px; min-width:0;}
   .videos > .video-box{flex:1 1 220px; min-width:180px; max-width:420px;}
-  .floating-video{position:fixed !important; z-index:1000 !important; width:220px !important; height:145px !important; min-width:220px !important; max-width:220px !important; min-height:145px !important; max-height:145px !important; flex:0 0 220px !important; right:24px; top:24px; bottom:auto; aspect-ratio:auto !important; box-sizing:border-box; overflow:hidden; box-shadow:0 10px 30px rgba(0,0,0,.22); cursor:grab; user-select:none;}
-  #stageLocalSlot > .video-box{width:220px; height:145px; min-width:220px; max-width:220px; flex:0 0 220px; aspect-ratio:auto;}
-  .floating-video:active{cursor:grabbing;}
-
-
-
-
-
-
-
-
-
-
-
-
+  /* The local camera tile is ALWAYS position:fixed and ALWAYS lives directly
+     under <body> — it is never reparented into the sidebar or the media
+     stage. "Docking" is purely a matter of syncing its inline left/top/
+     width/height to match an invisible placeholder's on-screen rect (see
+     #stageLocalSlot below and syncDockedRect() in the script). Because the
+     coordinate space never changes, there is no reparent-then-reposition
+     step that can visibly snap or jump — this was the root cause of the
+     old dragging/anchoring bugs.  */
+  .local-tile{
+    position:fixed !important;
+    z-index:1000;
+    box-sizing:border-box;
+    overflow:hidden;
+    cursor:grab !important;
+    user-select:none;
+    touch-action:none;
+    box-shadow:0 10px 30px rgba(0,0,0,.22);
+    transition:box-shadow .15s var(--ease);
+  }
+  .local-tile.dragging{cursor:grabbing !important;}
+  .local-tile.docked{box-shadow:none;}
+  .local-tile.local-tile--sized{width:160px; height:120px;}
+  @media (max-width:640px){
+    .local-tile.local-tile--sized{width:136px; height:102px;}
+  }
+  /* Invisible spacer that reserves the local tile's spot in the media-stage
+     grid layout. Its rect is what the local tile's docked position/size are
+     synced to — it is intentionally the exact same size as .local-tile--sized
+     so docking never causes a size pop either. */
+  #stageLocalSlot{
+    width:160px; height:120px; flex:0 0 160px;
+    visibility:hidden; pointer-events:none;
+  }
+  @media (max-width:640px){
+    #stageLocalSlot{width:136px; height:102px; flex-basis:136px;}
+  }
 
   .media-item{position:relative;flex:1 1 50%;min-width:0;height:100%;overflow:hidden;background:#000;}
   .media-item video{width:100%;height:100%;object-fit:contain;display:block;background:#000;}
@@ -306,13 +327,15 @@
   .local-screen-box.hidden{display:none !important;}
   .floating-screen-share{display:none !important;}
 
-
-
-
   .media-fullscreen{position:absolute;top:8px;right:8px;width:30px;height:30px;border:0;border-radius:7px;background:rgba(0,0,0,.62);color:#fff;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;cursor:pointer;transition:opacity .15s,background .15s;z-index:5;}
   .media-item:hover .media-fullscreen,
   .media-item:focus-within .media-fullscreen,
   .media-fullscreen:focus-visible{opacity:1;pointer-events:auto;}
+  /* Touch devices have no reliable :hover, so the fullscreen button must be
+     visible without it — otherwise it's unreachable on mobile. */
+  @media (hover: none){
+    .media-fullscreen{opacity:1; pointer-events:auto;}
+  }
   .media-item:has(video.hidden) .media-fullscreen{opacity:0 !important;pointer-events:none !important;}
   .media-fullscreen:hover{background:rgba(0,0,0,.82);}
   .media-fullscreen svg{width:16px;height:16px;}
@@ -576,8 +599,6 @@
     }
     .media-grid{flex-direction:column;}
     .media-grid .video-box{width:100%; max-width:none;}
-    .floating-video{width:180px !important;height:120px !important;min-width:180px !important;max-width:180px !important;min-height:120px !important;max-height:120px !important;flex:0 0 180px !important;right:12px;top:12px;bottom:auto;}
-    #stageLocalSlot > .video-box{width:180px;height:120px;min-width:180px;max-width:180px;flex-basis:180px;}
     .call-controls{flex-direction:row; flex-wrap:wrap; flex:1 1 100%;}
     .call-controls .btn{width:auto; flex:1;}
   }
@@ -668,7 +689,7 @@
           <div id="membersList"></div>
         </div>
 
-        <div class="floating-video video-box" id="localBox" title="Click to anchor • Drag to move">
+        <div class="video-box local-tile local-tile--sized" id="localBox" title="Click to anchor • Drag to move">
           <div class="media-item local-camera-item">
             <video id="localVideo" autoplay playsinline muted></video>
             <button class="media-fullscreen" id="localCameraFullscreen" type="button" title="Fullscreen camera" aria-label="Fullscreen camera"><svg data-lucide="maximize-2"></svg></button>
@@ -821,9 +842,10 @@
     try{ let id=localStorage.getItem(CLIENT_ID_KEY); if(!id){ id=crypto.randomUUID(); localStorage.setItem(CLIENT_ID_KEY,id); } return id; }catch(e){ return "client-" + Math.random().toString(36).slice(2) + Date.now().toString(36); }
   }
   const clientId = getClientId();
-  const CHUNK_SIZE = 256 * 1024; // Larger SCTP messages reduce per-chunk overhead while staying broadly compatible
+  const CHUNK_SIZE = 256 * 1024; // Matches what browsers can send as a single native WebRTC message
   let fileIdCounter = 0;
   let incomingFiles = new Map(); // `${peerId}:${fileId}` -> {name,size,mime,chunks,received,senderName,refs}
+  let pendingRawChunks = new Map(); // `${peerId}:${fileId}` -> {chunks:[...], done} — raw bytes that arrived before their file-meta
   let chatHistory = []; // {senderName, text} — replayed to peers who join later
 
   const landing = document.getElementById("landing");
@@ -905,22 +927,49 @@
   }
 
   // ---------- video tile for each connected peer ----------
+  // Fullscreens the <video> element itself, not a wrapping div. Video
+  // elements have the most universal native fullscreen support of any
+  // element — in particular, iOS Safari only exposes fullscreen via
+  // video.webkitEnterFullscreen(), which does not exist on plain <div>s, so
+  // fullscreening a wrapper silently failed there. Falls back to a
+  // same-page modal if neither API is available.
   function openMediaFullscreen(video, name){
-    if(!video || !video.srcObject) return;
-    // Fullscreen the individual media item, not the whole camera/share tile.
-    // This keeps camera + screen share independently fullscreenable.
-    const target = video.closest(".media-item") || video;
-    const fallback = () => openVideoModal(video.srcObject, name);
+    if(!video) return;
+    const stream = video.srcObject;
+    const hasVideoTrack = !!(stream && typeof stream.getVideoTracks === "function" && stream.getVideoTracks().length);
+    if(!hasVideoTrack) return;
+    const fallback = () => openVideoModal(stream, name);
     try{
-      if(target.requestFullscreen){
-        const result = target.requestFullscreen();
+      if(typeof video.requestFullscreen === "function"){
+        const result = video.requestFullscreen();
         if(result && typeof result.catch === "function") result.catch(fallback);
+      } else if(typeof video.webkitEnterFullscreen === "function"){
+        video.webkitEnterFullscreen();
       } else {
         fallback();
       }
     }catch(e){
       fallback();
     }
+  }
+
+  // Single shared binder for every fullscreen button — local and remote,
+  // camera and screen. Only stopPropagation is used; preventDefault on
+  // pointerdown/up is deliberately never called, because it suppresses the
+  // browser's synthetic click event on some browsers (notably touch/mobile),
+  // which is what silently broke this button before. `labelFn` may be a
+  // function so the label (e.g. a display name) can change after binding.
+  function bindFullscreenButton(button, video, labelFn){
+    if(!button || !video) return;
+    const stop = e => { e.stopPropagation(); };
+    button.addEventListener("pointerdown", stop);
+    button.addEventListener("pointerup", stop);
+    button.addEventListener("mousedown", stop);
+    button.addEventListener("mouseup", stop);
+    button.addEventListener("click", e => {
+      stop(e);
+      openMediaFullscreen(video, typeof labelFn === "function" ? labelFn() : labelFn);
+    });
   }
 
   function createPeerTile(p){
@@ -963,30 +1012,20 @@
     p.screenPlaceholderEl = screenBox.querySelector(".placeholder");
     p.labelEl = cameraBox.querySelector(".label");
 
-    const wireRemoteFullscreen = (button, video, name) => {
-      if(!button) return;
-      const stop = e => {
-        e.stopPropagation();
-        if(e.cancelable) e.preventDefault();
-      };
-      button.addEventListener("pointerdown", stop);
-      button.addEventListener("pointerup", stop);
-      button.addEventListener("mousedown", stop);
-      button.addEventListener("mouseup", stop);
-      button.addEventListener("click", e => {
-        stop(e);
-        openMediaFullscreen(video, name);
-      });
-    };
-    wireRemoteFullscreen(cameraBox.querySelector(".media-fullscreen"), p.videoEl, `${p.name || "Guest"} — Camera`);
-    wireRemoteFullscreen(screenBox.querySelector(".media-fullscreen"), p.screenEl, `${p.name || "Guest"} — Screen share`);
+    bindFullscreenButton(cameraBox.querySelector(".media-fullscreen"), p.videoEl, () => `${p.name || "Guest"} — Camera`);
+    bindFullscreenButton(screenBox.querySelector(".media-fullscreen"), p.screenEl, () => `${p.name || "Guest"} — Screen share`);
     icons();
+
+    // Extra safety net alongside ResizeObserver: whenever a peer tile is
+    // added the media-stage grid can reflow, so re-sync the docked local
+    // tile's position/size immediately rather than waiting for the observer.
+    if(typeof dockState !== "undefined" && dockState === "docked") syncDockedRect();
   }
 
   function getOrCreatePeer(id, name){
     let p = peers.get(id);
     if(!p){
-      p = { id, name: name || "Them", dataConn: null, mediaConn: null, cameraConn: null, screenConn: null, cameraStream: null, screenStream: null, audioContext: null, analyser: null, speaking: false, dataConnToken: 0, mediaConnToken: 0, isHostConnection: false, authenticated: false, clientId: "", lastSeen: Date.now() };
+      p = { id, name: name || "Them", dataConn: null, fileConn: null, mediaConn: null, cameraConn: null, screenConn: null, cameraStream: null, screenStream: null, audioContext: null, analyser: null, speaking: false, dataConnToken: 0, mediaConnToken: 0, isHostConnection: false, authenticated: false, clientId: "", lastSeen: Date.now() };
       peers.set(id, p);
       createPeerTile(p);
       if(isHost || p.isHostConnection) updateKnownMember(id, p.name, !!p.isHostConnection);
@@ -1041,6 +1080,7 @@
     stopRemoteMedia(p);
     if(p.audioContext){ try{ p.audioContext.close(); }catch(e){} p.audioContext = null; }
     if(p.dataConn){ try{ p.dataConn.close(); }catch(e){} }
+    if(p.fileConn){ try{ p.fileConn.close(); }catch(e){} p.fileConn = null; }
 
     if(p.cameraTile) p.cameraTile.remove(); if(p.screenTile) p.screenTile.remove();
     peers.delete(id);
@@ -1050,6 +1090,7 @@
     if(announce && p.name && p.name !== "Them") addMsg(`${p.name} left`, "system");
     updateConnectionStatus();
     renderMembers();
+    if(typeof dockState !== "undefined" && dockState === "docked") syncDockedRect();
   }
 
 
@@ -1105,101 +1146,163 @@
   const mediaGrid = document.getElementById("mediaGrid");
   const stageLocalSlot = document.getElementById("stageLocalSlot");
   const collapseMedia = document.getElementById("collapseMedia");
+  // Anchor point for localScreenBox's floating-mode home: it originally sits
+  // in the sidebar, directly before the call-controls block.
+  const sidebarCallControls = document.querySelector(".sidebar .call-controls");
 
-  function wireFullscreenButton(button, video, name){
-    if(!button) return;
-    const stop = e => {
-      // Stop the event from reaching the draggable/anchoring camera tile,
-      // but DO NOT preventDefault() here: doing so on pointer/mouse events
-      // can suppress the browser's synthetic click and break fullscreen.
-      e.stopPropagation();
-    };
-    ["pointerdown","pointerup","mousedown","mouseup"].forEach(type => button.addEventListener(type, stop));
-    button.addEventListener("click", e => {
-      stop(e);
-      openMediaFullscreen(video, name);
-    });
+  bindFullscreenButton(document.getElementById("localCameraFullscreen"), localVideo, () => `${myName} — Camera`);
+  bindFullscreenButton(document.getElementById("localScreenFullscreen"), document.getElementById("localScreenVideo"), () => `${myName} — Screen share`);
+
+  // Keeps the local camera video's "hidden" class in sync with whether it
+  // actually has a live video track. This drives the CSS that hides the
+  // fullscreen button when there's nothing to show, and stops the button
+  // from opening a blank fullscreen video when the camera is off.
+  function updateLocalCameraVisibility(){
+    const hasVideo = !!(localStream && localStream.getVideoTracks().length);
+    localVideo.classList.toggle("hidden", !hasVideo);
   }
-  wireFullscreenButton(document.getElementById("localCameraFullscreen"), localVideo, `${myName} — Camera`);
-  wireFullscreenButton(document.getElementById("localScreenFullscreen"), document.getElementById("localScreenVideo"), `${myName} — Screen share`);
+  updateLocalCameraVisibility();
 
-  let mediaExpanded = false;
-  let draggingLocal = false, dragMoved = false, dragDX = 0, dragDY = 0;
+  // ---------- local tile: drag + dock state machine ----------
+  // The local tile is ALWAYS position:fixed and ALWAYS a direct child of
+  // <body> (see HTML). It never moves in the DOM. "Docked" just means its
+  // inline left/top/width/height are synced to match the invisible
+  // #stageLocalSlot placeholder's rect; "floating" means they're set to a
+  // freely-draggable point. Because the element's coordinate space never
+  // changes, switching between the two states — even mid-drag — cannot
+  // produce a visual snap or jump, which is what kept breaking before.
+  let dockState = "floating"; // "floating" | "docked"
+  let floatPos = null;        // {x,y} last floating top-left, in viewport px
+  let dragging = false, dragMoved = false;
+  let dragOffsetX = 0, dragOffsetY = 0, dragStartX = 0, dragStartY = 0;
+  let dockObserver = null;
 
-  function expandMedia(){
-    mediaExpanded = true;
+  function defaultFloatPos(){
+    const r = localBox.getBoundingClientRect();
+    return { x: window.innerWidth - r.width - 24, y: 24 };
+  }
+
+  function clampPos(x, y){
+    const r = localBox.getBoundingClientRect();
+    const maxX = Math.max(8, window.innerWidth - r.width - 8);
+    const maxY = Math.max(8, window.innerHeight - r.height - 8);
+    return { x: Math.min(Math.max(8, x), maxX), y: Math.min(Math.max(8, y), maxY) };
+  }
+
+  function applyFloatPos(pos){
+    localBox.style.width = "";
+    localBox.style.height = "";
+    localBox.style.left = pos.x + "px";
+    localBox.style.top = pos.y + "px";
+  }
+
+  // Syncs the tile's inline position/size to the placeholder's current rect.
+  // Safe to call often — it's a cheap read+write.
+  function syncDockedRect(){
+    if(dockState !== "docked") return;
+    const r = stageLocalSlot.getBoundingClientRect();
+    localBox.style.left = r.left + "px";
+    localBox.style.top = r.top + "px";
+    localBox.style.width = r.width + "px";
+    localBox.style.height = r.height + "px";
+  }
+
+  function enterDocked(){
+    dockState = "docked";
+    localBox.classList.add("docked");
     mediaStage.classList.add("open");
-
-    stageLocalSlot.appendChild(localBox);
-    localBox.classList.remove("floating-video");
-    localBox.style.cssText = "";
-    localBox.classList.add("video-box");
-
-    if(!localScreenBox.classList.contains("hidden")){
-      stageLocalSlot.appendChild(localScreenBox);
-    }
-
     remoteVideosEl.style.display = "flex";
+    // The screen-share preview always travels with the camera tile, whether
+    // or not it's currently visible, so starting/stopping a share while
+    // docked doesn't leave it stranded in the sidebar.
+    stageLocalSlot.appendChild(localScreenBox);
+    syncDockedRect();
+    if(!dockObserver && window.ResizeObserver){
+      dockObserver = new ResizeObserver(() => syncDockedRect());
+    }
+    dockObserver?.observe(stageLocalSlot);
+    dockObserver?.observe(mediaGrid);
     collapseMedia?.focus({preventScroll:true});
   }
 
-  function collapseMediaView(){
-    mediaExpanded = false;
+  function enterFloating(pos){
+    dockState = "floating";
+    localBox.classList.remove("docked");
     mediaStage.classList.remove("open");
-    document.body.appendChild(localBox);
-    localBox.classList.add("floating-video");
-    localBox.style.bottom = "auto";
     remoteVideosEl.style.display = "none";
+    dockObserver?.disconnect();
+    if(sidebarCallControls && sidebarCallControls.parentNode){
+      sidebarCallControls.parentNode.insertBefore(localScreenBox, sidebarCallControls);
+    }
+    floatPos = clampPos((pos || floatPos || defaultFloatPos()).x, (pos || floatPos || defaultFloatPos()).y);
+    applyFloatPos(floatPos);
   }
 
-  collapseMedia?.addEventListener("click", collapseMediaView);
+  window.addEventListener("resize", () => {
+    if(dockState === "docked") syncDockedRect();
+    else if(floatPos){ floatPos = clampPos(floatPos.x, floatPos.y); applyFloatPos(floatPos); }
+  });
 
   // The camera tile has two modes:
-  // 1) floating: drag it normally; click anchors/opens the media stage.
-  // 2) anchored: dragging the camera itself OUT of the stage immediately
-  //    detaches it back into the floating position. This makes the anchor
-  //    reversible without requiring a separate hidden control.
+  // 1) floating: drag it normally; click (without dragging) docks it.
+  // 2) docked: dragging the camera itself OUT of the stage immediately
+  //    undocks it, tracking the pointer from the exact spot it was grabbed —
+  //    no repositioning math happens at the moment of the switch, so there's
+  //    nothing that can visibly jump.
   localBox.addEventListener("pointerdown", e => {
     if(e.target.closest(".media-fullscreen")) return;
-    draggingLocal = true;
+    dragging = true;
     dragMoved = false;
     const r = localBox.getBoundingClientRect();
-    dragDX = e.clientX-r.left;
-    dragDY = e.clientY-r.top;
+    dragOffsetX = e.clientX - r.left;
+    dragOffsetY = e.clientY - r.top;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    localBox.classList.add("dragging");
     localBox.setPointerCapture?.(e.pointerId);
   });
 
   localBox.addEventListener("pointermove", e => {
-    if(!draggingLocal) return;
+    if(!dragging) return;
 
-    const r = localBox.getBoundingClientRect();
-    const moveX = e.clientX - (r.left + dragDX);
-    const moveY = e.clientY - (r.top + dragDY);
-    if(Math.abs(moveX) < 3 && Math.abs(moveY) < 3) return;
-    dragMoved = true;
-
-    // If anchored, the first real drag detaches it from the media stage.
-    if(mediaExpanded){
-      collapseMediaView();
-      // Recalculate the pointer offset after reparenting.
-      const nr = localBox.getBoundingClientRect();
-      dragDX = Math.max(0, Math.min(nr.width, e.clientX - nr.left));
-      dragDY = Math.max(0, Math.min(nr.height, e.clientY - nr.top));
+    if(dockState === "docked"){
+      // Flip to floating WITHOUT touching left/top/width/height — they
+      // already exactly equal the placeholder's rect (that's what "docked"
+      // means), which is exactly where the tile is on screen right now, so
+      // there is nothing to reposition. dragOffsetX/Y were captured at
+      // pointerdown against this same on-screen rect, so they remain valid.
+      dockState = "floating";
+      localBox.classList.remove("docked");
+      mediaStage.classList.remove("open");
+      remoteVideosEl.style.display = "none";
+      dockObserver?.disconnect();
+      if(sidebarCallControls && sidebarCallControls.parentNode){
+        sidebarCallControls.parentNode.insertBefore(localScreenBox, sidebarCallControls);
+      }
     }
 
-    localBox.style.left = Math.max(8, Math.min(window.innerWidth-localBox.offsetWidth-8, e.clientX-dragDX)) + "px";
-    localBox.style.top = Math.max(8, Math.min(window.innerHeight-localBox.offsetHeight-8, e.clientY-dragDY)) + "px";
-    localBox.style.right = "auto";
-    localBox.style.bottom = "auto";
+    if(!dragMoved && Math.hypot(e.clientX - dragStartX, e.clientY - dragStartY) > 3) dragMoved = true;
+
+    floatPos = clampPos(e.clientX - dragOffsetX, e.clientY - dragOffsetY);
+    applyFloatPos(floatPos);
   });
 
   localBox.addEventListener("pointerup", e => {
-    if(!draggingLocal) return;
-    draggingLocal = false;
+    if(!dragging) return;
+    dragging = false;
+    localBox.classList.remove("dragging");
     try{ localBox.releasePointerCapture?.(e.pointerId); }catch(err){}
-    if(!dragMoved && !mediaExpanded) expandMedia();
+    if(!dragMoved && dockState === "floating") enterDocked();
   });
-  localBox.addEventListener("pointercancel", () => { draggingLocal = false; });
+  localBox.addEventListener("pointercancel", () => {
+    dragging = false;
+    localBox.classList.remove("dragging");
+  });
+
+  collapseMedia?.addEventListener("click", () => enterFloating());
+
+  // Initial placement.
+  enterFloating(defaultFloatPos());
 
   // Full GitHub-Flavored Markdown renderer. marked handles headings, emphasis,
   // lists, tables, task lists, blockquotes, code blocks, links, etc. DOMPurify
@@ -1488,26 +1591,22 @@
       addMsg(msg.text, "them", p.name, false, fromId);
     } else if(msg.type === "file-meta"){
       const refs = addFileMsg(msg.name, null, "them", humanSize(msg.size), msg.mime, p.name, true, fromId);
-      incomingFiles.set(`${fromId}:${msg.id}`, { name: msg.name, size: msg.size, mime: msg.mime, chunks: [], received: 0, senderName: p.name, refs });
-    } else if(msg.type === "file-chunk"){
       const key = `${fromId}:${msg.id}`;
-      const f = incomingFiles.get(key);
-      if(!f) return;
-      f.chunks.push(msg.data);
-      f.received += msg.data.byteLength || msg.data.length || 0;
-      const pct = f.size ? Math.min(100, f.received/f.size*100) : 0;
-      if(f.refs) f.refs.progressFill.style.width = pct.toFixed(1) + "%";
-    } else if(msg.type === "file-done"){
-      const key = `${fromId}:${msg.id}`;
-      const f = incomingFiles.get(key);
-      if(!f) return;
-      const blob = new Blob(f.chunks, { type: f.mime || "application/octet-stream" });
-      const url = URL.createObjectURL(blob);
-      if(f.refs){
-        buildFileContent(f.refs.div, f.name, url, humanSize(f.size), f.mime);
-        f.refs.progressTrack.classList.add("hidden");
+      const entry = { name: msg.name, size: msg.size, mime: msg.mime, chunks: [], received: 0, senderName: p.name, refs };
+      incomingFiles.set(key, entry);
+      // Raw chunks travel on a separate connection from this control message,
+      // so they can in principle arrive first. Anything staged for this
+      // transfer gets folded in immediately.
+      const staged = pendingRawChunks.get(key);
+      if(staged){
+        pendingRawChunks.delete(key);
+        staged.chunks.forEach(bytes => { entry.chunks.push(bytes); entry.received += bytes.byteLength; });
+        if(entry.refs){
+          const pct = entry.size ? Math.min(100, entry.received/entry.size*100) : 0;
+          entry.refs.progressFill.style.width = pct.toFixed(1) + "%";
+        }
+        if(staged.done) finalizeIncomingFile(key, entry);
       }
-      incomingFiles.delete(key);
     }
   }
 
@@ -1759,37 +1858,151 @@
     });
   }
 
+  // ---------- dedicated raw binary channel for file transfer ----------
+  // Every other connection in this app uses PeerJS's default 'binary'
+  // serialization, which encodes each message through its own object-pack
+  // format and then — critically — silently re-splits anything above its
+  // internal MTU (about 16KB) into a stream of smaller sub-messages with
+  // their own reassembly bookkeeping. That happens whether or not we've
+  // already chunked the data ourselves, so a 256KB slice sent on that
+  // connection was quietly being fragmented into another ~16 pieces by the
+  // library, each with real JS-side encode/decode cost. That extra layer —
+  // not the app-level chunk size or backpressure logic — was the actual
+  // throughput bottleneck.
+  //
+  // File bytes now travel on a second, dedicated connection per peer opened
+  // with serialization:'none', which hands data straight to the browser's
+  // native WebRTC stack with no library-level wrapping or re-chunking.
+  // Since that connection carries nothing but raw ArrayBuffers, each chunk
+  // gets a tiny 5-byte header we add ourselves: 1 byte for chunk-vs-done,
+  // 4 bytes for the numeric transfer id.
+  function buildChunkFrame(fileId, bytes){
+    const frame = new Uint8Array(5 + bytes.length);
+    new DataView(frame.buffer).setUint32(1, fileId, false);
+    frame[0] = 0; // 0 = chunk
+    frame.set(bytes, 5);
+    return frame;
+  }
+  function buildDoneFrame(fileId){
+    const frame = new Uint8Array(5);
+    frame[0] = 1; // 1 = done
+    new DataView(frame.buffer).setUint32(1, fileId, false);
+    return frame;
+  }
+
+  function finalizeIncomingFile(key, f){
+    const blob = new Blob(f.chunks, { type: f.mime || "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
+    if(f.refs){
+      buildFileContent(f.refs.div, f.name, url, humanSize(f.size), f.mime);
+      f.refs.progressTrack.classList.add("hidden");
+    }
+    incomingFiles.delete(key);
+  }
+
+  function handleFileChunkRaw(raw, fromId){
+    if(raw && typeof raw.arrayBuffer === "function"){
+      // Some environments may hand us a Blob instead of an ArrayBuffer.
+      raw.arrayBuffer().then(buf => handleFileChunkRaw(buf, fromId));
+      return;
+    }
+    if(!(raw instanceof ArrayBuffer) || raw.byteLength < 5) return;
+    const view = new DataView(raw);
+    const flag = view.getUint8(0);
+    const fileId = view.getUint32(1, false);
+    const key = `${fromId}:${fileId}`;
+    const f = incomingFiles.get(key);
+
+    if(flag === 1){ // done
+      if(f) finalizeIncomingFile(key, f);
+      else {
+        const staged = pendingRawChunks.get(key) || { chunks: [], done: false };
+        staged.done = true;
+        pendingRawChunks.set(key, staged);
+      }
+      return;
+    }
+
+    const bytes = new Uint8Array(raw, 5);
+    if(f){
+      f.chunks.push(bytes);
+      f.received += bytes.byteLength;
+      const pct = f.size ? Math.min(100, f.received/f.size*100) : 0;
+      if(f.refs) f.refs.progressFill.style.width = pct.toFixed(1) + "%";
+    } else {
+      // file-meta (on the control channel) hasn't arrived yet — stage the
+      // bytes and fold them in once it does.
+      const staged = pendingRawChunks.get(key) || { chunks: [], done: false };
+      staged.chunks.push(bytes);
+      pendingRawChunks.set(key, staged);
+    }
+  }
+
+  function wireFileConn(conn){
+    const peerId = conn.peer;
+    conn.on("open", () => {
+      const p = getOrCreatePeer(peerId);
+      if(p.fileConn && p.fileConn !== conn && p.fileConn.open){ try{ conn.close(); }catch(e){} return; }
+      p.fileConn = conn;
+    });
+    conn.on("data", (raw) => handleFileChunkRaw(raw, peerId));
+    const clear = () => { const p = peers.get(peerId); if(p && p.fileConn === conn) p.fileConn = null; };
+    conn.on("close", clear);
+    conn.on("error", clear);
+  }
+
+  // Opens (or reuses) the raw file-transfer connection to a peer. Resolves
+  // once it's actually open and ready to carry bytes.
+  function ensureFileConn(peerId){
+    const p = peers.get(peerId);
+    if(!p || !myPeer) return Promise.reject(new Error("no such peer"));
+    if(p.fileConn && p.fileConn.open) return Promise.resolve(p.fileConn);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const conn = myPeer.connect(peerId, { reliable: true, serialization: "none", metadata: { kind: "file" } });
+      p.fileConn = conn;
+      conn.on("open", () => { if(!settled){ settled = true; resolve(conn); } });
+      conn.on("error", (err) => { if(!settled){ settled = true; reject(err); } });
+      setTimeout(() => { if(!settled){ settled = true; reject(new Error("file channel timed out")); } }, 8000);
+    });
+  }
+
   // Broadcasts one file to every connected peer at once, reading straight
-  // off the local File handle (file.stream()) and pushing each chunk
-  // directly over the WebRTC data channel to the recipient(s). The file's
+  // off the local File handle (file.stream()) and pushing each chunk over
+  // each recipient's dedicated raw file connection (see above). The file's
   // bytes never leave the two browsers — the signaling server (and this
   // page) only ever sees the room code and small JSON metadata like the
   // filename and size, never the file content itself, and nothing is
   // written to any server-side storage at any point.
   //
   // Each transfer gets its own id, so several transfers (or several peers)
-  // can be in flight at once without one waiting on another. Chunks are
-  // sent in 64KB pieces and backpressure is now event-driven (see
-  // waitForDrain) instead of polling on a timer, which is what makes this
-  // meaningfully faster than before.
+  // can be in flight at once without one waiting on another. Backpressure
+  // is event-driven (see waitForDrain) instead of polling on a timer, so
+  // the sender resumes the instant there's room rather than guessing with
+  // a setTimeout.
   async function sendFileToAll(file){
-    const conns = [...peers.values()]
-      .map(p => p.dataConn)
-      .filter(c => c && c.open);
+    const targets = [...peers.entries()].filter(([, p]) => p.dataConn && p.dataConn.open);
 
-    if(!conns.length){
+    if(!targets.length){
       setStatus(callStatus, "Not connected to anyone yet.", "err");
       return;
     }
 
-    const fileId = "f" + (++fileIdCounter) + "-" + Date.now();
-    conns.forEach(c => c.send({
-      type: "file-meta",
-      id: fileId,
-      name: file.name,
-      size: file.size,
-      mime: file.type
-    }));
+    const fileConns = (await Promise.all(
+      targets.map(([id]) => ensureFileConn(id).catch(() => null))
+    )).filter(Boolean);
+
+    if(!fileConns.length){
+      setStatus(callStatus, "Couldn't open a transfer channel — try again.", "err");
+      return;
+    }
+
+    const fileId = ++fileIdCounter;
+    targets.forEach(([, p]) => {
+      try{
+        p.dataConn.send({ type: "file-meta", id: fileId, name: file.name, size: file.size, mime: file.type });
+      }catch(e){}
+    });
 
     const url = (isImage(file.type, file.name) || isVideo(file.type, file.name))
       ? URL.createObjectURL(file)
@@ -1815,18 +2028,13 @@
 
         while(offset < value.length){
           const slice = value.slice(offset, offset + CHUNK_SIZE);
+          const frame = buildChunkFrame(fileId, slice);
 
-          // Send this same slice to every currently-open recipient.
+          // Send this same frame to every currently-open recipient.
           // The sender's progress is independent of the recipient UI.
-          const liveConns = conns.filter(c => c.open && c.dataChannel && c.dataChannel.readyState === "open");
+          const liveConns = fileConns.filter(c => c.open && c.dataChannel && c.dataChannel.readyState === "open");
           liveConns.forEach(c => {
-            try{
-              c.send({
-                type: "file-chunk",
-                id: fileId,
-                data: slice
-              });
-            }catch(e){}
+            try{ c.send(frame); }catch(e){}
           });
 
           offset += slice.length;
@@ -1852,11 +2060,9 @@
         }
       }
 
-      conns.forEach(c => {
+      fileConns.forEach(c => {
         if(c.open){
-          try{
-            c.send({ type: "file-done", id: fileId });
-          }catch(e){}
+          try{ c.send(buildDoneFrame(fileId)); }catch(e){}
         }
       });
 
@@ -2037,6 +2243,7 @@
         camOn = true;
         camBtn.classList.add("active-toggle");
         setIcon(document.getElementById("camIcon"), "video");
+        updateLocalCameraVisibility();
         refreshCallAll();
       }catch(e){
         setStatus(callStatus, "Couldn't access your camera.", "err");
@@ -2046,6 +2253,7 @@
       camOn = false;
       camBtn.classList.remove("active-toggle");
       setIcon(document.getElementById("camIcon"), "video-off");
+      updateLocalCameraVisibility();
       refreshCallAll();
     }
   });
@@ -2060,6 +2268,7 @@
         sharingScreen = true;
         screenBtn.classList.add("active-toggle");
         setIcon(document.getElementById("screenIcon"), "monitor-x");
+        localScreenBox.classList.remove("hidden");
         refreshCallAll();
         track.addEventListener("ended", stopScreenShare);
       }catch(e){
@@ -2077,6 +2286,7 @@
     }
     const localScreenVideo = document.getElementById("localScreenVideo");
     if(localScreenVideo){ localScreenVideo.srcObject = null; localScreenVideo.classList.add("hidden"); }
+    localScreenBox.classList.add("hidden");
     sharingScreen = false;
     screenBtn.classList.remove("active-toggle");
     setIcon(document.getElementById("screenIcon"), "monitor-up");
@@ -2281,6 +2491,7 @@
       startBtn.disabled = false;
     });
     myPeer.on("connection", (conn) => {
+      if(conn.metadata?.kind === "file"){ wireFileConn(conn); return; }
       wireDataConn(conn);
       updateConnectionStatus();
     });
@@ -2359,6 +2570,11 @@
         setStatus(joinStatus, "Something went wrong: " + err.type, "err");
       }
       joinBtn.disabled = false;
+    });
+    myPeer.on("connection", (conn) => {
+      if(conn.metadata?.kind === "file"){ wireFileConn(conn); return; }
+      wireDataConn(conn);
+      updateConnectionStatus();
     });
     myPeer.on("call", handleIncomingCall);
   }
